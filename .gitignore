@@ -1,0 +1,12 @@
+__pycache__
+
+.idea/
+.vscode/
+
+*.txt
+*.pt
+*.png
+*.pkl
+*.svg
+*.log
+*.pdb
