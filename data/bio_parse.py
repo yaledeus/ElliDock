@@ -1,12 +1,15 @@
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import standard_aa_names as AA_NAMES_3
 from Bio.Data import IUPACData
+from typing import List
+
 import numpy as np
 import os
 
 parser = PDBParser(QUIET=True)
 AA_NAMES_1 = tuple(IUPACData.protein_letters_3to1.values())
 BACKBONE_ATOM = ['N', 'CA', 'C', 'O']
+N_INDEX, CA_INDEX, C_INDEX, O_INDEX = 0, 1, 2, 3
 
 ### get index of the residue by 3-letter name
 def aa_index_3(aa_name_3):
@@ -124,5 +127,115 @@ def sabdab_pdb_parse(pdb_path, hchain_name, lchain_name, agchain_names, numberin
     return ab_seq, ab_coord, cdr_pos, ag_seq, ag_coord
 
 
-# pdb_path = "./12e8.pdb"
-# ab_seq, ab_coord, cdr_pos, ag_seq, ag_coord = sabdab_pdb_parse(pdb_path, 'H', 'L', 'P', 'imgt')
+class Complex:
+    def __init__(self):
+        self.ab_seq = {}
+        self.cdr_pos = {}
+        self.ag_seq = {}
+        self.ab_coord = {}
+        self.ag_coord = {}
+
+    def from_pdb(self, pdb_path, hchain_name, lchain_name, agchain_names):
+        self.ab_seq, self.cdr_pos, self.ag_seq, self.ab_coord, self.ag_coord = \
+            sabdab_pdb_parse(pdb_path, hchain_name, lchain_name, agchain_names)
+
+    def hchain_only(self):
+        return self.ab_seq['L'] == ''
+
+    def lchain_only(self):
+        return self.ab_seq['H'] == ''
+
+    def hchain_seq(self) -> List:
+        if self.lchain_only():
+            return []
+        else:
+            h_seq = []
+            for res_name_1 in self.ab_seq['H']:
+                h_seq.append(aa_index_1(res_name_1))
+            return h_seq
+
+    def lchain_seq(self) -> List:
+        if self.hchain_only():
+            return []
+        else:
+            l_seq = []
+            for res_name_1 in self.ab_seq['L']:
+                l_seq.append(aa_index_1(res_name_1))
+            return l_seq
+
+    def antibody_seq(self) -> List:
+        return self.hchain_seq() + self.lchain_seq()
+
+    def hchain_coord(self):
+        return np.array(self.ab_coord['H']) if not self.lchain_only() else None
+
+    def lchain_coord(self):
+        return np.array(self.ab_coord['L']) if not self.hchain_only() else None
+
+    def antibody_coord(self):
+        if self.hchain_only():
+            return self.hchain_coord()
+        elif self.lchain_only():
+            return self.lchain_coord()
+        else:
+            return np.concatenate((self.hchain_coord(), self.lchain_coord()), axis=0)
+
+    def antibody_relative_pos(self) -> List:
+        return [i for i in range(len(self.antibody_seq()))]
+
+    def antibody_identify(self) -> List:
+        ### 0 for heavy chain, 1 for light chain
+        return [0 for _ in range(len(self.hchain_seq()))] + [1 for _ in range(len(self.lchain_seq()))]
+
+    def antigen_seq(self) -> List:
+        ag_seq = []
+        for _, chain_seq in self.ag_seq.items():
+            for res_name_1 in chain_seq:
+                ag_seq.append(aa_index_1(res_name_1))
+        return ag_seq
+
+    def antigen_coord(self):
+        ag_coord = None
+        for _, chain_coord in self.ag_coord.items():
+            if not ag_coord:
+                ag_coord = chain_coord
+            else:
+                ag_coord = np.concatenate((ag_coord, chain_coord), axis=0)
+        return ag_coord
+
+    def antigen_relative_pos(self) -> List:
+        return [i for i in range(len(self.antigen_seq()))]
+
+    def antigen_identity(self) -> List:
+        ag_id = []
+        i = 0
+        for _, chain_seq in self.ag_seq.items():
+            ag_id.extend([i] * len(chain_seq))
+            i += 1
+        return ag_id
+
+    def cdr_span(self, chain, idx):
+        """
+        :param chain: heavy chain or light chain, choices: ('H', 'L')
+        :param idx: 1/2/3
+        :return: a tuple (start, end) describing cdr positions
+        """
+        assert chain in ('H', 'L'), f'invalid chain: {chain}'
+        assert idx in (1, 2, 3), f'invalid index: {idx}'
+        return self.cdr_pos[f'CDR-{chain}{idx}']
+
+    def find_keypoint(self, threshold=10) -> List:
+        keypoints = []
+        antibody_ca_coord = self.antibody_coord()[:, CA_INDEX]     # CA coordinates, (N, 3)
+        antigen_ca_coord = self.antigen_coord()[:, CA_INDEX]
+        for i in range(antibody_ca_coord.shape[0]):
+            ab_ca = antibody_ca_coord[i].reshape(1, -1)     # (1, 3)
+            dist = (antigen_ca_coord - ab_ca) ** 2
+            dist = np.sqrt(dist.sum(axis=-1))
+            valid_ag_ca_list = np.where(dist < threshold)[0]
+            ab_ca = ab_ca.squeeze()     # (3,)
+            for j in valid_ag_ca_list:
+                ag_ca = antigen_ca_coord[j]
+                keypoint_coord = 0.5 * (ab_ca + ag_ca)
+                keypoints.append(keypoint_coord)
+        return keypoints
