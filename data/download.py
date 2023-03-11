@@ -3,13 +3,15 @@
 import os
 import re
 import json
-import requests
 from argparse import ArgumentParser
 from collections import defaultdict
 from functools import partial
 from tqdm import tqdm
 from tqdm.contrib.concurrent import thread_map, process_map
 
+from bio_parse import sabdab_pdb_parse
+import sys
+sys.path.append('..')
 from utils.io import read_csv
 from utils.network import url_get
 
@@ -180,6 +182,46 @@ def read_sceptre(fpath):
                 item[key] = entry[idx]
         items.append(item)
     return items
+
+
+def post_process(item):
+    # renumbering pdb file and revise CDRs
+    pdb_data_path, numbering, pdb = item['pdb_data_path'], item['numbering'], item['pdb']
+    if numbering == 'none':
+        pass
+    elif numbering == 'imgt':
+        if not item['pre_numbered']:
+            cmd = f'python ImmunoPDB.py -i {pdb_data_path} -o {pdb_data_path} -s imgt'
+            exit_code = os.system(cmd)
+            if exit_code != 0:
+                print(f'renumbering failed for {pdb}. scheme {numbering}')
+                return None
+        try:
+            ab_seq, ab_coord, cdr_pos, ag_seq, ag_coord = sabdab_pdb_parse(
+                pdb_data_path, item['heavy_chain'], item['light_chain'], item['antigen_chains'],
+                numbering=numbering
+            )
+        except (AssertionError, ValueError) as e:
+            print(f'parsing pdb failed for {pdb}. reason: {e}')
+            return None
+        except Exception as e:
+            print(f'parsing pdb failed for {pdb} unexpectedly. reason: {e}')
+            return None
+        item['hchain_seq'], item['lchain_seq'] = ab_seq['H'], ab_seq['L']
+        item['hchain_coord'], item['lchain_coord'] = ab_coord['H'], ab_coord['L']
+        item['ag_seqs'] = [v for _, v in ag_seq.items()]
+        item['ag_coord'] = [v for _, v in ag_coord.items()]
+        for c in ['H', 'L']:
+            for i in range(1, 4):
+                cdr_name = f'{c}{i}'.lower()
+                item[f'cdr{cdr_name}_pos'] = cdr_pos[f'CDR-{c}{i}']
+                if cdr_pos[f'CDR-{c}{i}'] != ():
+                    item[f'cdr{cdr_name}_seq'] = ab_seq[c][cdr_pos[f'CDR-{c}{i}'][0]: cdr_pos[f'CDR-{c}{i}'][1] + 1]
+                else:
+                    item[f'cdr{cdr_name}_seq'] = ''
+    else:
+        raise NotImplementedError(f'Numbering scheme {numbering} not supported')
+    return item
 
 
 def download_one_item(item):
