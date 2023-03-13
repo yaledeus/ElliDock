@@ -154,34 +154,50 @@ class SabDabDataset(torch.utils.data.Dataset):
         idx = self._check_load_part(idx)
         item = self.data[idx]
 
-        # antibody
-        ab_seq = item.antibody_seq()
-        ab_bb_coord = item.antibody_coord()     # backbone atoms, [N_ab, 4, 3]
-        ab_rp = item.antibody_relative_pos()
-        ab_id = item.antibody_identify()
+        try:
+            # antibody
+            ab_seq = item.antibody_seq()
+            ab_bb_coord = item.antibody_coord()     # backbone atoms, [N_ab, 4, 3]
+            ab_rp = item.antibody_relative_pos()
+            ab_id = item.antibody_identify()
 
-        # antigen
-        ag_seq = item.antigen_seq()
-        ag_bb_coord = item.antigen_coord()      # backbone atoms, [N_ag, 4, 3]
-        ag_rp = item.antigen_relative_pos()
-        ag_id = item.antigen_identity()
+            # antigen
+            ag_seq = item.antigen_seq()
+            ag_bb_coord = item.antigen_coord()      # backbone atoms, [N_ag, 4, 3]
+            ag_rp = item.antigen_relative_pos()
+            ag_id = item.antigen_identity()
 
-        # center
-        center = np.mean(ag_bb_coord.reshape(-1, 3), axis=0)
+            # center
+            center = np.mean(ag_bb_coord.reshape(-1, 3), axis=0)
 
-        # keypoint pairs
-        keypoints = item.find_keypoint(threshold=10)
+            # keypoint pairs
+            keypoints = item.find_keypoint(threshold=10)
 
-        data = {
-            'S': np.array(ab_seq + ag_seq),
-            'X': np.concatenate((ab_bb_coord, ag_bb_coord), axis=0),
-            'RP': np.array(ab_rp + ag_rp),
-            'ID': np.array(ab_id + ag_id),
-            ### segment, 0 for antibody and 1 for antigen
-            'Seg': np.array([0 for _ in range(len(ab_seq))] + [1 for _ in range(len(ag_seq))]),
-            'center': center,
-            'keypoints': keypoints,
-        }
+            assert ab_bb_coord.ndim == 3, f'invalid antibody coordinate dimension: {ab_bb_coord.ndim}'
+            assert ag_bb_coord.ndim == 3, f'invalid antigen coordinate dimension: {ag_bb_coord.ndim}'
+            assert len(ab_seq) == len(ab_rp) and len(ab_seq) == len(ab_id) and len(ab_seq) == ab_bb_coord.shape[0], \
+                'antibody seq/coord/rp/id dimension mismatch'
+            assert len(ag_seq) == len(ag_rp) and len(ag_seq) == len(ag_id) and len(ag_seq) == ag_bb_coord.shape[0], \
+                'antigen seq/coord/rp/id dimension mismatch'
+            assert ab_bb_coord.shape[1] == ag_bb_coord.shape[1] and ab_bb_coord.shape[-1] == ag_bb_coord.shape[-1], \
+                'antibody and antigen coordinates mismatch'
+
+            data = {
+                'S': np.array(ab_seq + ag_seq),
+                'X': np.concatenate((ab_bb_coord, ag_bb_coord), axis=0),
+                'RP': np.array(ab_rp + ag_rp),
+                'ID': np.array(ab_id + ag_id),
+                ### segment, 0 for antibody and 1 for antigen
+                'Seg': np.array([0 for _ in range(len(ab_seq))] + [1 for _ in range(len(ag_seq))]),
+                'center': center,
+                'keypoints': keypoints,
+            }
+        except Exception as e:
+            print(f"Error occurred: {e}")
+            data = {
+                'Error': True
+            }
+
 
         return data
 
@@ -193,10 +209,14 @@ class SabDabDataset(torch.utils.data.Dataset):
         for key, _type in zip(keys, types):
             val = []
             for item in batch:
+                if 'Error' in item:
+                    continue
                 val.append(torch.tensor(item[key], dtype=_type))
             res[key] = torch.cat(val, dim=0)
         centers, keypoints, bid, k_bid = [], [], [], []
         for i, item in enumerate(batch):
+            if 'Error' in item:
+                continue
             centers.append(item['center'])
             keypoints.append(torch.from_numpy(np.array(item['keypoints'])))
             bid.extend([i] * len(item['S']))

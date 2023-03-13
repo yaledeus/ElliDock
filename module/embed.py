@@ -30,6 +30,7 @@ def _construct_knn(X, rule_mats, k_neighbors):
     dist = torch.norm(dist, dim=-1)  # [Ef, n_channel, n_channel]
     dist = torch.min(dist.reshape(dist.shape[0], -1), dim=1)[0]  # [Ef]
     src_dst = src_dst.transpose(0, 1)  # [2, Ef]
+    dist[src_dst[0] == src_dst[1]] += BIGINT    # rule out i2i
     dist = (torch.ones(N, N, device=dist.device) * BIGINT).index_put_(tuple([k for k in src_dst]), dist)
     # dist_neighbors: [N, topk], dst: [N, topk]
     dist_neighbors, dst = torch.topk(dist, k_neighbors, dim=-1, largest=False)  # [N, topk]
@@ -40,7 +41,7 @@ def _construct_knn(X, rule_mats, k_neighbors):
     is_valid = dist_neighbors < BIGINT
     src = src.masked_select(is_valid)
     dst = dst.masked_select(is_valid)
-    edges = torch.stack([dst, src])  # direction denotes the message passing direction
+    edges = torch.stack([dst, src])
     return edges  # [2, E]
 
 
@@ -80,9 +81,9 @@ class AminoAcidEmbedding(nn.Module):
         :param RP: [N], residue positions
         :param ID: [N], chain identifier, antibody: H/L, antigen: *
         '''
-        res_embed = self.residue_embedding(S)       # (N, res_embed_size)
-        rp_embed  = self.res_pos_embedding(RP) + self.res_id_embedding(ID)
-        return torch.cat([res_embed, rp_embed], dim=-1)  # (N, res_embed_size * 2)
+        # (N, embed_size)
+        res_embed = self.residue_embedding(S) + self.res_pos_embedding(RP) + self.res_id_embedding(ID)
+        return res_embed  # (N, res_embed_size)
 
 
 class ComplexGraph(nn.Module):
@@ -131,4 +132,4 @@ class ComplexGraph(nn.Module):
 
     @classmethod
     def feature_dim(cls, embed_size):
-        return (2 * embed_size + 3, 2)      # node_attr, edge_attr
+        return (embed_size + 3, 2)      # node_attr, edge_attr

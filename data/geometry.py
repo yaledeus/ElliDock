@@ -116,7 +116,7 @@ def kabsch(A, B):
     return R.T, t
 
 
-def protein_surface_intersection(X, Y, sigma=1.5, gamma=0.8):
+def protein_surface_intersection(X, Y, sigma=1.67, gamma=0.67):
     """
     :param X: point cloud  to be referenced, (N, 3)
     :param Y: point cloud to be tested whether it is outside the protein, (M, 3)

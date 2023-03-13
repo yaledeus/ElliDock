@@ -89,9 +89,10 @@ class ExpDock(nn.Module):
             coord_diff = X[row] - X[col]    # (n_edges, 3)
             coord_nvec_prod = torch.mul(coord_diff, nvecs[row]).sum(dim=-1).unsqueeze(1)    # (n_edges, 1)
             fb_loss_n = unsorted_segment_mean(torch.mul(
-                torch.sgn(coord_nvec_prod), torch.pow(torch.abs(coord_nvec_prod).clip(min=1e-3), -2)
+                torch.norm(coord_diff, dim=-1).clip(min=1e-3).unsqueeze(1).pow(-3), coord_nvec_prod
                 ), row, num_segments=X.shape[0]
             ).squeeze().abs().sqrt()   # (N,)
+            fb_loss_n = (1. + fb_loss_n).log()
             fb_loss_n = scatter_mean(fb_loss_n, index=bid, dim=0)   # (bs)
             fb_loss += fb_loss_n.mean()
         fb_loss /= self.n_layers
@@ -171,9 +172,9 @@ class ExpDock(nn.Module):
         match_loss /= len(rot)
         si_loss /= len(rot)
 
-        print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, match_loss: {match_loss}, "
-                  f"si_loss: {si_loss}", level='INFO')
-        loss = 0.1 * fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.1 * si_loss
+        print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
+                  f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
+        loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
         return loss, (fb_loss, ot_loss, dock_loss, match_loss, si_loss)
 
 
