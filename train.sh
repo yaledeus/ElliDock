@@ -7,15 +7,21 @@
 #########################################################################
 
 ########## adjust configs according to your needs ##########
+# set model
+if [ -z "$MODEL" ]; then
+	MODEL=ExpDock
+fi
+
 if [ $MODEL = "ExpDock" ]; then
   # TODO: define DATA_DIR
-  DATA_DIR = -1
-  # TODO: define TRAIN_SET
-  TRAIN_SET = -1
-  # TODO: define DEV_SET
-  VALID_SET = -1
+  DATA_DIR=-1
+  TRAIN_SET=${DATA_DIR}/train.json
+  VALID_SET=${DATA_DIR}/valid.json
   SAVE_DIR=${DATA_DIR}/ckpt
+fi
+
 BATCH_SIZE=16
+
 ######### end of adjust ##########
 
 ########## Instruction ##########
@@ -59,13 +65,15 @@ ${PREFIX} train.py \
     --valid_set $VALID_SET \
     --save_dir $SAVE_DIR \
     --model_type $MODEL \
-    --max_epoch 50 \
+    --max_epoch 500 \
     --patience 10 \
     --save_topk 10 \
     --embed_dim 64 \
-    --hidden_dim 128 \
-    --k_neighbors 9 \
+    --hidden_size 192 \
+    --k_neighbors 10 \
     --n_layers 4 \
+    --n_keypoints 10 \
+    --att_heads 4 \
     --shuffle \
     --batch_size ${BATCH_SIZE} \
     --gpu "${!GPU_ARR[@]}"

@@ -10,6 +10,7 @@ parser = PDBParser(QUIET=True)
 AA_NAMES_1 = tuple(IUPACData.protein_letters_3to1.values())
 BACKBONE_ATOM = ['N', 'CA', 'C', 'O']
 N_INDEX, CA_INDEX, C_INDEX, O_INDEX = 0, 1, 2, 3
+MAX_CHAINS = 3
 
 ### get index of the residue by 3-letter name
 def aa_index_3(aa_name_3):
@@ -59,6 +60,8 @@ def sabdab_pdb_parse(pdb_path, hchain_name, lchain_name, agchain_names, numberin
     ag_seq = {}         # antigen sequence
     ab_coord = {}       # antibody coordinates, backbone only
     ag_coord = {}       # antigen coordinates, backbone only
+    ab_len = 0          # antibody length
+    ag_len = 0          # antigen length
     # parse antibody and CDRs
     for chain in structure[0]:
         chain_name = chain.get_id()
@@ -88,6 +91,7 @@ def sabdab_pdb_parse(pdb_path, hchain_name, lchain_name, agchain_names, numberin
                     else:
                         res_type += '-'
                 ab_seq[c] += aa_3to1(res_name)
+                ab_len += 1
                 backbone_coord = []
                 for bb in BACKBONE_ATOM:
                     backbone_coord.append(residue[bb].get_coord())
@@ -116,28 +120,32 @@ def sabdab_pdb_parse(pdb_path, hchain_name, lchain_name, agchain_names, numberin
         for residue in chain:
             if (res_name := residue.get_resname()) in AA_NAMES_3:
                 ag_seq[chain_name] += aa_3to1(res_name)
+                ag_len += 1
                 backbone_coord = []
                 for bb in BACKBONE_ATOM:
                     backbone_coord.append(residue[bb].get_coord())
                 ag_coord[chain_name].append(backbone_coord)
         ag_coord[chain_name] = np.asarray(ag_coord[chain_name]).tolist()
 
-    assert 'H' in ab_seq and 'L' in ab_seq, 'blank antibody.'
-    assert ag_seq != {}, 'blank antigen.'
+    assert 'H' in ab_seq and 'L' in ab_seq, 'antibody missing H/L'
+    assert ab_len >= 100, 'antibody sequence length < 100'
+    assert ag_len >= 20, 'antigen sequence length < 20'
     return ab_seq, ab_coord, cdr_pos, ag_seq, ag_coord
 
 
 class Complex:
-    def __init__(self):
-        self.ab_seq = {}
-        self.cdr_pos = {}
-        self.ag_seq = {}
-        self.ab_coord = {}
-        self.ag_coord = {}
+    def __init__(self, ab_seq, cdr_pos, ag_seq, ab_coord, ag_coord):
+        self.ab_seq = ab_seq
+        self.cdr_pos = cdr_pos
+        self.ag_seq = ag_seq
+        self.ab_coord = ab_coord
+        self.ag_coord = ag_coord
 
-    def from_pdb(self, pdb_path, hchain_name, lchain_name, agchain_names):
-        self.ab_seq, self.cdr_pos, self.ag_seq, self.ab_coord, self.ag_coord = \
+    @classmethod
+    def from_pdb(cls, pdb_path, hchain_name, lchain_name, agchain_names):
+        ab_seq, ab_coord, cdr_pos, ag_seq, ag_coord = \
             sabdab_pdb_parse(pdb_path, hchain_name, lchain_name, agchain_names)
+        return cls(ab_seq, cdr_pos, ag_seq, ab_coord, ag_coord)
 
     def hchain_only(self):
         return self.ab_seq['L'] == ''
@@ -167,10 +175,10 @@ class Complex:
         return self.hchain_seq() + self.lchain_seq()
 
     def hchain_coord(self):
-        return np.array(self.ab_coord['H']) if not self.lchain_only() else None
+        return np.asarray(self.ab_coord['H']) if not self.lchain_only() else None
 
     def lchain_coord(self):
-        return np.array(self.ab_coord['L']) if not self.hchain_only() else None
+        return np.asarray(self.ab_coord['L']) if not self.hchain_only() else None
 
     def antibody_coord(self):
         if self.hchain_only():
@@ -195,9 +203,10 @@ class Complex:
         return ag_seq
 
     def antigen_coord(self):
-        ag_coord = None
+        ag_coord = np.array([])
         for _, chain_coord in self.ag_coord.items():
-            if not ag_coord:
+            chain_coord = np.asarray(chain_coord)
+            if not ag_coord.shape[0]:
                 ag_coord = chain_coord
             else:
                 ag_coord = np.concatenate((ag_coord, chain_coord), axis=0)

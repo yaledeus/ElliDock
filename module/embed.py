@@ -5,7 +5,7 @@ from torch import nn
 
 import sys
 sys.path.append('..')
-from data.bio_parse import AA_NAMES_1
+from data.bio_parse import AA_NAMES_1, MAX_CHAINS
 from data.geometry import get_backbone_dihedral_angles, pairwise_dihedrals
 
 
@@ -86,24 +86,25 @@ class AminoAcidEmbedding(nn.Module):
 
 
 class ComplexGraph(nn.Module):
-    def __init__(self, embed_size):
+    def __init__(self, embed_size, k_neighbors):
         super().__init__()
 
         self.num_aa_type = len(AA_NAMES_1)
         self.embed_size = embed_size
+        self.k_neighbors = k_neighbors
 
-        self.aa_embedding = AminoAcidEmbedding(self.num_aa_type, 2, embed_size)
+        self.aa_embedding = AminoAcidEmbedding(self.num_aa_type, MAX_CHAINS, embed_size)
 
     def dihedral_embedding(self, X):
         return get_backbone_dihedral_angles(X)
 
     def embedding(self, X, S, RP, ID):
         H = self.aa_embedding(S, RP, ID)
-        H = torch.cat(H, self.dihedral_embedding(X))
+        H = torch.cat([H, self.dihedral_embedding(X)], dim=-1)
         return H
 
     @torch.no_grad()
-    def construct_edges(self, X, Seg, bid, k_neighbors):
+    def _construct_edges(self, X, Seg, bid, k_neighbors):
         N = bid.shape[0]
         same_bid = bid.unsqueeze(-1).repeat(1, N)
         same_seg = Seg.unsqueeze(-1).repeat(1, N)
@@ -122,8 +123,12 @@ class ComplexGraph(nn.Module):
         return pairwise_dihedrals(X, edges)         # (n_edge, 2)
 
 
-    def forward(self, X, S, RP, ID, Seg, bid, k_neighbors):
-        H = self.embedding(X, S, RP, ID)                            # (N, 2 * embed_size + 3)
-        edges = self.construct_edges(X, Seg, bid, k_neighbors)      # (2, n_edge)
-        edge_attr = pairwise_dihedrals(X, edges)                    # (n_edge, 2)
-        return H, edges, edge_attr
+    def forward(self, X, S, RP, ID, Seg, bid):
+        node_attr = self.embedding(X, S, RP, ID)                        # (N, 2 * embed_size + 3)
+        edges = self._construct_edges(X, Seg, bid, self.k_neighbors)    # (2, n_edge)
+        edge_attr = pairwise_dihedrals(X, edges)                        # (n_edge, 2)
+        return node_attr, edges, edge_attr
+
+    @classmethod
+    def feature_dim(cls, embed_size):
+        return (2 * embed_size + 3, 2)      # node_attr, edge_attr

@@ -4,10 +4,11 @@ import numpy as np
 from torch import nn
 import torch.nn.functional as F
 import torch
+from .find_triangular import find_triangular_cython
 
 
 def coord2radial(edges, coord):
-    row, col = edges[0], edges[1]
+    row, col = edges
     coord_diff = coord[row] - coord[col]
     radial = torch.sum(coord_diff ** 2, 1).unsqueeze(1)
 
@@ -18,7 +19,7 @@ def coord2radial(edges, coord):
 
 
 def vec2product(edges, vec):
-    row, col = edges[0], edges[1]
+    row, col = edges
     product = torch.mul(vec[row], vec[col])     # (n_edge, 3)
     product = product.sum(dim=-1).reshape(-1, 1)    # (n_edge, 1)
     return product
@@ -27,7 +28,7 @@ def vec2product(edges, vec):
 ### find k satisfies i->j, i->k, j->k
 @torch.no_grad()
 def find_triangular(edges):
-    source, target = edges[0, :], edges[1, :]
+    source, target = edges
     klist = []
     for idx in range(edges.shape[1]):
         k = []
@@ -44,10 +45,10 @@ def find_triangular(edges):
         klist.append(k)
     return klist
 
-### test
+# ## test
 # edges = torch.tensor([[0, 0, 0, 1, 1, 1],
 #                       [1, 2, 3, 2, 3, 4]])
-# print(find_triangular(edges))
+# print(find_triangular_cython(edges.numpy()))
 
 
 ### chemistry && position pairwise energy GCL
@@ -81,12 +82,12 @@ class Ch_Pos_GCL(nn.Module):
 
         if self.attention:
             self.att_mlp = nn.Sequential(
-                nn.Linear(hidden_nf, 1, bias=False),
+                nn.Linear(hidden_nf, 1),
                 nn.Sigmoid()
             )
 
     def forward(self, h, coord, edges, nvecs, node_attr, edge_attr=None):
-        row, col = edges[0], edges[1]
+        row, col = edges
         radial, coord_diff = coord2radial(edges, coord)
         nprod = vec2product(edges, nvecs)
 
@@ -138,11 +139,11 @@ class Tri_Att_GCL(nn.Module):
         :param edge_index: (2, E)
         :return:
         """
-        row, col = edges[0], edges[1]
+        row, col = edges
         device = Z.device
         output = []
 
-        klist = find_triangular(edges)
+        klist = find_triangular_cython(edges.cpu().numpy())
 
         for h in range(self.att_heads):
             q = self._modules[f'linear_q{h}'](Z)    # (n_edges, hidden_nf)
@@ -157,16 +158,22 @@ class Tri_Att_GCL(nn.Module):
             for idx in range(edges.shape[1]):
                 num_k = len(klist[idx])
                 if num_k == 0:  # no triangular found for node i and j
-                    tri_att_val[idx, :] = 1.
+                    tri_att_val[idx] = 1.
                     continue
                 alpha_ijk = []
+                v_k = []
                 for tri_k in klist[idx]:
                     idx_i2k, idx_j2k = tri_k[0], tri_k[1]
+                    # alpha_ijk: (K,)
                     alpha_ijk.append(1. / np.sqrt(self.hidden_nf) * torch.dot(q[idx], k[idx_i2k]) + b[idx_j2k])
-                alpha_ijk = F.softmax(torch.tensor(alpha_ijk, device=device), dim=-1)
-                for i, tri_k in enumerate(klist[idx]):
-                    idx_i2k = tri_k[0]
-                    tri_att_val += alpha_ijk[i] * v[idx_i2k]
+                    # v_k: (K,)
+                    v_k.append(v[idx_i2k])
+                alpha_ijk = F.softmax(torch.tensor(alpha_ijk, device=device), dim=0)   # (K,)
+                v_k = torch.vstack(v_k)     # (K, hidden_nf)
+                tri_att_val[idx] = alpha_ijk.unsqueeze(0).mm(v_k).squeeze()
+                # for i, tri_k in enumerate(klist[idx]):
+                #     idx_i2k = tri_k[0]
+                #     tri_att_val[idx] += alpha_ijk[i] * v[idx_i2k]
 
             output.append(torch.mul(g, tri_att_val))
 
@@ -182,11 +189,10 @@ class Tri_Att_GCL(nn.Module):
 ### Pairwise energy && Triangular self-Attention EGNN
 class PTA_EGNN(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d,
-                 att_heads=4, act_fn=nn.SiLU(), n_layers=4, dropout=0.1):
+                 att_heads=4, act_fn=nn.SiLU(), dropout=0.1):
         super(PTA_EGNN, self).__init__()
 
         self.hidden_nf = hidden_nf
-        self.n_layers = n_layers
 
         self.dropout = nn.Dropout(dropout)
 
@@ -232,16 +238,18 @@ class PTA_EGNN(nn.Module):
 
         # update coordinates
         ita = .2    # weight
-        row, col = edges[0], edges[1]
-        x_trans = coord_diff * np.mul(self.phi_u(chem), self.phi_x(pos))
+        row, col = edges
+        x_trans = coord_diff * torch.mul(self.phi_u(chem), self.phi_x(pos))
         x_agg = unsorted_segment_mean(x_trans, row, num_segments=coord.shape[0])    # (N, 3)
         coord = ita * init_coord + (1 - ita) * coord + x_agg
 
         # update normal vectors
         gamma = .2  # weight
-        n_trans = nvecs * np.mul(self.phi_u(chem), self.phi_n(pos))
+        n_trans = nvecs[col] * torch.mul(self.phi_u(chem), self.phi_n(pos))
         n_agg = unsorted_segment_mean(n_trans, row, num_segments=coord.shape[0])    # (N, 3)
         nvecs = gamma * init_nvecs + (1 - gamma) * nvecs + n_agg
+        # normalize
+        nvecs = nvecs / (torch.norm(nvecs, dim=-1).unsqueeze(1) + 1e-8)
 
         # update h
         beta = .2   # weight

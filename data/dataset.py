@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from bio_parse import Complex
+from .bio_parse import Complex
 import sys
 sys.path.append('..')
 from utils.logger import print_log
@@ -135,7 +135,8 @@ class SabDabDataset(torch.utils.data.Dataset):
             try:
                 complex = Complex.from_pdb(
                     item['pdb_data_path'], item['heavy_chain'], item['light_chain'],
-                    item['antigen_chains'])
+                    item['antigen_chains']
+                )
             except AssertionError as e:
                 print_log(e, level='ERROR')
                 print_log(f'parse {item["pdb"]} pdb failed, skip', level='ERROR')
@@ -197,7 +198,7 @@ class SabDabDataset(torch.utils.data.Dataset):
         centers, keypoints, bid, k_bid = [], [], [], []
         for i, item in enumerate(batch):
             centers.append(item['center'])
-            keypoints.append(torch.tensor(item['keypoints'], dtype=torch.float))
+            keypoints.append(torch.from_numpy(np.array(item['keypoints'])))
             bid.extend([i] * len(item['S']))
             k_bid.extend([i] * len(item['keypoints']))
         res['center'] = torch.tensor(np.array(centers), dtype=torch.float)

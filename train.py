@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 
 from utils.logger import print_log
 from utils.random_seed import setup_seed, SEED
+from data import SabDabDataset
 
 setup_seed(SEED)
 
@@ -18,8 +19,12 @@ from trainer import TrainConfig
 def parse():
     parser = argparse.ArgumentParser(description='training')
 
-    # TODO: add arguments
+    # data
+    parser.add_argument('--train_set', type=str, required=True, help='path to train set')
+    parser.add_argument('--valid_set', type=str, required=True, help='path to valid set')
+
     # training related
+    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--save_dir', type=str, required=True, help='directory to save model and logs')
     parser.add_argument('--max_epoch', type=int, default=10, help='max training epoch')
     parser.add_argument('--grad_clip', type=float, default=1.0, help='clip gradients with too big norm')
@@ -27,6 +32,8 @@ def parse():
     parser.add_argument('--patience', type=int, default=3, help='patience before early stopping')
     parser.add_argument('--save_topk', type=int, default=-1,
                         help='save topk checkpoint. -1 for saving all ckpt that has a better validation metric than its previous epoch')
+    parser.add_argument('--shuffle', action='store_true', help='shuffle data')
+    parser.add_argument('--num_workers', type=int, default=8)
 
     # device
     parser.add_argument('--gpus', type=int, nargs='+', required=True, help='gpu to use, -1 for cpu')
@@ -36,18 +43,26 @@ def parse():
     # model
     parser.add_argument('--model_type', type=str, required=True, choices=['ExpDock'], help='Type of model')
     parser.add_argument('--embed_dim', type=int, default=64, help='dimension of residue/atom embedding')
-    parser.add_argument('--hidden_dim', type=int, default=128, help='dimension of hidden states')
+    parser.add_argument('--hidden_size', type=int, default=128, help='dimension of hidden states')
+    parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--k_neighbors', type=int, default=9, help='Number of neighbors in KNN graph')
     parser.add_argument('--n_layers', type=int, default=3, help='Number of layers')
+    parser.add_argument('--n_keypoints', type=int, default=10, help='Number of keypoints')
+    parser.add_argument('--att_heads', type=int, default=4, help='Number of attention heads')
 
     return parser.parse_args()
 
 
 def main(args):
     ########### load your train / valid set ###########
-    # TODO: train_set, valid_set
-    train_set = None
-    valid_set = None
+    if args.model_type == 'ExpDock':
+        train_set = SabDabDataset(args.train_set)
+        valid_set = SabDabDataset(args.valid_set)
+    else:
+        raise NotImplemented(f'model {args.model_type} not implemented')
+
+    if args.model_type == 'ExpDock':
+        collate_fn = SabDabDataset.collate_fn
 
     ########## define your model/trainer/trainconfig #########
     config = TrainConfig(args.save_dir, args.lr, args.max_epoch,
@@ -55,10 +70,13 @@ def main(args):
                          grad_clip=args.grad_clip,
                          save_topk=args.save_topk)
 
-    # TODO: define model and Trainer
-    model = None
-    Trainer = None
-    collate_fn = None
+    if args.model_type == 'ExpDock':
+        from trainer import ExpDockTrainer as Trainer
+        from module import ExpDock
+        model = ExpDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
+                        att_heads=args.att_heads, n_layers=args.n_layers,
+                        n_keypoints=args.n_keypoints, dropout=args.dropout)
+
 
     if len(args.gpus) > 1:
         args.local_rank = int(os.environ['LOCAL_RANK'])

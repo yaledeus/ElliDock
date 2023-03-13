@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 import torch.nn.functional as F
 from .bio_parse import N_INDEX, CA_INDEX, C_INDEX
 
@@ -10,9 +11,9 @@ def dihedral_from_four_points(p0, p1, p2, p3):
     Returns:
         Dihedral angles in radian, (*, ).
     """
-    v0 = torch.tensor(p2 - p1)
-    v1 = torch.tensor(p0 - p1)
-    v2 = torch.tensor(p3 - p2)
+    v0 = p2 - p1
+    v1 = p0 - p1
+    v2 = p3 - p2
     u1 = torch.cross(v0, v1, dim=-1)
     n1 = u1 / torch.linalg.norm(u1, dim=-1, keepdim=True)
     u2 = torch.cross(v0, v2, dim=-1)
@@ -82,3 +83,77 @@ def pairwise_dihedrals(coord, edges):
     )
     ir_dihed = torch.stack([ir_phi, ir_psi], dim=-1)
     return ir_dihed
+
+
+def rand_rotation_matrix():
+    a = torch.randn(3, 3)
+    q, r = torch.linalg.qr(a)
+    d = torch.diag(torch.sign(torch.diag(r)))
+    q = torch.mm(q, d)
+    if torch.linalg.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    return q
+
+
+def kabsch(A, B):
+    """
+    :param A: (N, 3)
+    :param B: (N, 3)
+    :return: R, t such that minimize RMSD(AR + t, B)
+    """
+    a_mean = A.mean(axis=0)
+    b_mean = B.mean(axis=0)
+    A_c = A - a_mean
+    B_c = B - b_mean
+    # Covariance matrix
+    H = A_c.T.mm(B_c)
+    U, S, V = torch.svd(H)
+    # Rotation matrix
+    R = V.mm(U.T)
+    # Translation vector
+    t = b_mean[None, :] - R.mm(a_mean[None, :].T).T
+    t = (t.T).squeeze()
+    return R.T, t
+
+
+def protein_surface_intersection(X, Y, sigma=1.5, gamma=0.8):
+    """
+    :param X: point cloud  to be referenced, (N, 3)
+    :param Y: point cloud to be tested whether it is outside the protein, (M, 3)
+    :param sigma, gamma: parameter
+    :return:
+    """
+    return (gamma + sigma * ((-((Y.unsqueeze(1).repeat(1, X.shape[0], 1) - X) ** 2).sum(dim=-1) / sigma)
+                             .exp().sum(dim=1)).log())
+
+
+class CoordNomralizer(nn.Module):
+    def __init__(self, mean=None, std=None) -> None:
+        super().__init__()
+        self.mean = torch.tensor([-0.50, 0.22, 0.13]) \
+                    if mean is None else torch.tensor(mean)
+        self.std = torch.tensor([14.9, 15.0, 17.3]) \
+                    if std is None else torch.tensor(std)
+        self.mean = nn.parameter.Parameter(self.mean, requires_grad=False)
+        self.std = nn.parameter.Parameter(self.std, requires_grad=False)
+
+    def centering(self, X, center, bid):
+        if X.ndim == 3:   # (N, n_channel, 3)
+            X = X - center[bid].unsqueeze(1)
+        elif X.ndim == 2: # (N, 3)
+            X = X - center[bid]
+        else:
+            raise ValueError
+        return X
+
+    def uncentering(self, X, center, bid):
+        X = X + center[bid]
+        return X
+
+    def normalize(self, X):
+        X = (X - self.mean) / self.std
+        return X
+
+    def unnormalize(self, X):
+        X = X * self.std + self.mean
+        return X
