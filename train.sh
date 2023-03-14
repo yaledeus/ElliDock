@@ -65,6 +65,7 @@ ${PREFIX} train.py \
     --valid_set $VALID_SET \
     --save_dir $SAVE_DIR \
     --model_type $MODEL \
+    --lr 1e-4 \
     --max_epoch 500 \
     --patience 10 \
     --save_topk 10 \

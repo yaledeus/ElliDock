@@ -33,7 +33,7 @@ def get_backbone_dihedral_angles(coord):
     """
     coord_N = coord[:, N_INDEX]   # (N, 3)
     coord_CA = coord[:, CA_INDEX]
-    coord_C = coord[:, CA_INDEX]
+    coord_C = coord[:, C_INDEX]
 
     # N-termini don't have omega and phi
     omega = F.pad(
@@ -113,7 +113,7 @@ def kabsch(A, B):
     # Translation vector
     t = b_mean[None, :] - R.mm(a_mean[None, :].T).T
     t = (t.T).squeeze()
-    return R.T, t
+    return A.mm(R.T) + t, R.T, t
 
 
 def protein_surface_intersection(X, Y, sigma=1.67, gamma=0.67):

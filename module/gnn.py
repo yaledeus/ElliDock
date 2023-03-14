@@ -4,7 +4,6 @@ import numpy as np
 from torch import nn
 import torch.nn.functional as F
 import torch
-from .find_triangular import find_triangular_cython
 
 
 def coord2radial(edges, coord):
@@ -129,21 +128,26 @@ class Tri_Att_GCL(nn.Module):
                 nn.Linear(input_nf, hidden_nf),
                 nn.Sigmoid()
             ))
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_q{h}'].weight)
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_k{h}'].weight)
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_v{h}'].weight)
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_b{h}'].weight)
 
         self.linear_out = nn.Linear(self.att_heads * hidden_nf, output_nf)
+        torch.nn.init.xavier_uniform_(self.linear_out.weight)
 
 
-    def forward(self, Z, edges):
+    def forward(self, Z, klist):
         """
         :param Z: (n_edges, input_nf)
-        :param edge_index: (2, E)
+        :param klist: (n_edges, 2, MAX_K)
         :return:
         """
-        row, col = edges
-        device = Z.device
         output = []
 
-        klist = find_triangular_cython(edges.cpu().numpy())
+        MAX_K = klist.shape[2]
+        idx_i2k, idx_j2k = klist[:, 0], klist[:, 1]  # (n_edges, MAX_K)
+        redundant = idx_i2k == -1  # (n_edges, MAX_K)
 
         for h in range(self.att_heads):
             q = self._modules[f'linear_q{h}'](Z)    # (n_edges, hidden_nf)
@@ -153,31 +157,22 @@ class Tri_Att_GCL(nn.Module):
 
             g = self._modules[f'mlp_g{h}'](Z)       # (n_edges, hidden_nf)
 
-            tri_att_val = torch.zeros_like(g)
+            tri_k = k[idx_i2k]  # (n_edges, MAX_K, hidden_nf)
+            tri_b = b[idx_j2k]  # (n_edges, MAX_K, 1)
+            tri_v = v[idx_i2k]  # (n_edges, MAX_K, hidden_nf)
 
-            for idx in range(edges.shape[1]):
-                num_k = len(klist[idx])
-                if num_k == 0:  # no triangular found for node i and j
-                    tri_att_val[idx] = 1.
-                    continue
-                alpha_ijk = []
-                v_k = []
-                for tri_k in klist[idx]:
-                    idx_i2k, idx_j2k = tri_k[0], tri_k[1]
-                    # alpha_ijk: (K,)
-                    alpha_ijk.append(1. / np.sqrt(self.hidden_nf) * torch.dot(q[idx], k[idx_i2k]) + b[idx_j2k])
-                    # v_k: (K,)
-                    v_k.append(v[idx_i2k])
-                alpha_ijk = F.softmax(torch.tensor(alpha_ijk, device=device), dim=0)   # (K,)
-                v_k = torch.vstack(v_k)     # (K, hidden_nf)
-                tri_att_val[idx] = alpha_ijk.unsqueeze(0).mm(v_k).squeeze()
-                # for i, tri_k in enumerate(klist[idx]):
-                #     idx_i2k = tri_k[0]
-                #     tri_att_val[idx] += alpha_ijk[i] * v[idx_i2k]
+            # set redundant node k's value to 0
+            tri_k[redundant] = 0.
+            tri_b[redundant] = 0.
+            tri_v[redundant] = 0.
+            alpha_ijk = 1. / np.sqrt(self.hidden_nf) * torch.sum(q.unsqueeze(1).repeat(1, MAX_K, 1)
+                                                                 * tri_k, dim=-1) \
+                        + tri_b.squeeze(2)  # (n_edges, MAX_K)
+            alpha_ijk = F.softmax(alpha_ijk, dim=1) # (n_edges, MAX_K)
+            tri_att_val = torch.matmul(alpha_ijk.unsqueeze(1), tri_v).squeeze() # (n_edges, hidden_nf)
 
             output.append(torch.mul(g, tri_att_val))
 
-        del klist   # release memory
 
         output = torch.cat(output, dim=-1)
         output = self.linear_out(output)        # (n_edges, output_nf)
@@ -230,11 +225,12 @@ class PTA_EGNN(nn.Module):
             nn.Linear(hidden_nf, hidden_nf)
         )
 
-    def forward(self, h, coord, edges, nvecs, edge_attr, node_attr, init_coord, init_nvecs):
+    def forward(self, h, coord, edges, nvecs, edge_attr, node_attr, init_coord, init_nvecs, klist):
+
         # z, chem, pos: (n_edge, hidden_nf), coord_diff: (n_edge, 3)
         z, chem, pos, coord_diff = self.ch_pos_gcl(h, coord, edges, nvecs, node_attr, edge_attr)
         # m: (n_edge, hidden_nf)
-        m = self.tri_att_gcl(z, edges)
+        m = self.tri_att_gcl(z, klist)
 
         # update coordinates
         ita = .2    # weight

@@ -13,6 +13,7 @@ from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch, protein
 from utils.logger import print_log
 from .embed import ComplexGraph
 from .gnn import PTA_EGNN, unsorted_segment_mean
+from .find_triangular import find_triangular_cython
 
 
 class ExpDock(nn.Module):
@@ -59,6 +60,8 @@ class ExpDock(nn.Module):
         )
 
         row, col = edges
+        klist = find_triangular_cython(edges.cpu().numpy())
+        klist = torch.from_numpy(klist).to(device)
 
         # CA atoms only
         X = X[:, CA_INDEX]      # (N, 3)
@@ -84,7 +87,7 @@ class ExpDock(nn.Module):
         fb_loss = 0.
         for i in range(self.n_layers):
             H, X, nvecs = self._modules[f'gnn_{i}'](
-                H, X, edges, nvecs, edge_attr, node_attr, init_X, init_nvecs
+                H, X, edges, nvecs, edge_attr, node_attr, init_X, init_nvecs, klist
             )
             coord_diff = X[row] - X[col]    # (n_edges, 3)
             coord_nvec_prod = torch.mul(coord_diff, nvecs[row]).sum(dim=-1).unsqueeze(1)    # (n_edges, 1)
@@ -140,7 +143,7 @@ class ExpDock(nn.Module):
             del D2  # free memory
             torch.cuda.empty_cache()
             # compute dock loss
-            R, t = kabsch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
+            _, R, t = kabsch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
             dock_loss += F.mse_loss(torch.mm(rot[i], R), torch.eye(3).to(device))
             dock_loss += F.mse_loss(torch.mm(trans[i][None, :], R), -t.unsqueeze(0))
             # compute match loss
@@ -176,6 +179,72 @@ class ExpDock(nn.Module):
                   f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
         loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
         return loss, (fb_loss, ot_loss, dock_loss, match_loss, si_loss)
+
+    def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
+        device = X.device
+        # center to antigen
+        X = self.normalizer.centering(X, center, bid)
+        # normalize X to approximately normal distribution
+        X = self.normalizer.normalize(X).float()
+
+        node_attr, edges, edge_attr = self.graph_constructor(
+            X, S, RP, ID, Seg, bid
+        )
+
+        klist = find_triangular_cython(edges.cpu().numpy())
+        klist = torch.from_numpy(klist).to(device)
+
+        # CA atoms only
+        X = X[:, CA_INDEX]  # (N, 3)
+        # rotate and translate for antibodies, X' = XR + t
+        rot, trans = self.sample_transformation(bid)
+        for i in range(len(rot)):
+            ab_idx = torch.logical_and(Seg == 0, bid == i)
+            X[ab_idx] = torch.mm(X[ab_idx], rot[i]) + trans[i]
+        init_X = X.clone()
+
+        # normal vectors
+        cross_seg_idx = torch.where(torch.diff(Seg) != 0)[0]
+        shift_X = F.pad(X[1:], pad=(0, 0, 0, 1), value=0.)
+        shift_X[cross_seg_idx] = 0.
+        nvecs = shift_X - X
+        nvecs = nvecs / (torch.norm(nvecs, dim=-1).unsqueeze(1) + 1e-8)
+        init_nvecs = nvecs.clone()
+
+        H = self.linear_in(node_attr)
+
+        for i in range(self.n_layers):
+            H, X, nvecs = self._modules[f'gnn_{i}'](
+                H, X, edges, nvecs, edge_attr, node_attr, init_X, init_nvecs, klist
+            )
+
+        for i in range(len(rot)):
+            ab_idx = torch.logical_and(Seg == 0, bid == i)
+            ag_idx = torch.logical_and(Seg == 1, bid == i)
+            H1, H2 = H[ab_idx], H[ag_idx]
+            X1, X2 = X[ab_idx], X[ag_idx]  # X1: (N, 3) X2: (M, 3)
+            Y1 = torch.zeros(self.n_keypoints, 3).to(device)  # (K, 3)
+            Y2 = torch.zeros(self.n_keypoints, 3).to(device)
+            for k in range(self.n_keypoints):
+                alpha_1k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
+                    torch.mm(H1, self._parameters[f'w1_mat_{k}']),
+                    H2.T.mean(dim=-1).unsqueeze(1)
+                ).squeeze()  # (N,)
+                alpha_1k = F.softmax(alpha_1k, dim=0).unsqueeze(1)  # (N, 1)
+                Y1[k] = torch.mm(alpha_1k.T, X1).squeeze()
+                alpha_2k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
+                    torch.mm(H2, self._parameters[f'w2_mat_{k}']),
+                    H1.T.mean(dim=-1).unsqueeze(1)
+                ).squeeze()  # (N,)
+                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
+                Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
+            _, R, t = kabsch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
+            X[ab_idx] = X[ab_idx].mm(R) + t
+
+        X = self.normalizer.unnormalize(X)
+        X = self.normalizer.uncentering(X, center, bid)
+
+        return X
 
 
     def sample_transformation(self, bid):

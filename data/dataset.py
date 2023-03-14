@@ -171,7 +171,7 @@ class SabDabDataset(torch.utils.data.Dataset):
             center = np.mean(ag_bb_coord.reshape(-1, 3), axis=0)
 
             # keypoint pairs
-            keypoints = item.find_keypoint(threshold=10)
+            keypoints = np.asarray(item.find_keypoint(threshold=10))
 
             assert ab_bb_coord.ndim == 3, f'invalid antibody coordinate dimension: {ab_bb_coord.ndim}'
             assert ag_bb_coord.ndim == 3, f'invalid antigen coordinate dimension: {ag_bb_coord.ndim}'
@@ -181,6 +181,7 @@ class SabDabDataset(torch.utils.data.Dataset):
                 'antigen seq/coord/rp/id dimension mismatch'
             assert ab_bb_coord.shape[1] == ag_bb_coord.shape[1] and ab_bb_coord.shape[-1] == ag_bb_coord.shape[-1], \
                 'antibody and antigen coordinates mismatch'
+            assert keypoints.shape[0] >= 1, 'keypoints not found'
 
             data = {
                 'S': np.array(ab_seq + ag_seq),
@@ -193,7 +194,7 @@ class SabDabDataset(torch.utils.data.Dataset):
                 'keypoints': keypoints,
             }
         except Exception as e:
-            print(f"Error occurred: {e}")
+            print_log(f"{e}", level='ERROR')
             data = {
                 'Error': True
             }
@@ -214,13 +215,15 @@ class SabDabDataset(torch.utils.data.Dataset):
                 val.append(torch.tensor(item[key], dtype=_type))
             res[key] = torch.cat(val, dim=0)
         centers, keypoints, bid, k_bid = [], [], [], []
-        for i, item in enumerate(batch):
+        i = 0
+        for item in batch:
             if 'Error' in item:
                 continue
             centers.append(item['center'])
-            keypoints.append(torch.from_numpy(np.array(item['keypoints'])))
+            keypoints.append(torch.tensor(item['keypoints']))
             bid.extend([i] * len(item['S']))
             k_bid.extend([i] * len(item['keypoints']))
+            i += 1
         res['center'] = torch.tensor(np.array(centers), dtype=torch.float)
         res['keypoints'] = torch.cat(keypoints, dim=0)
         res['bid'] = torch.tensor(bid, dtype=torch.long)
