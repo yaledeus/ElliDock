@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -95,25 +96,43 @@ def rand_rotation_matrix():
     return q
 
 
-def kabsch(A, B):
+def kabsch_torch(A, B):
     """
     :param A: (N, 3)
     :param B: (N, 3)
-    :return: R, t such that minimize RMSD(AR + t, B)
+    :return: AR + t, R, t such that minimize RMSD(AR + t, B)
     """
-    a_mean = A.mean(axis=0)
-    b_mean = B.mean(axis=0)
-    A_c = A - a_mean
-    B_c = B - b_mean
     # Covariance matrix
-    H = A_c.T.mm(B_c)
+    A = A.double()
+    B = B.double()
+    H = B.T @ A
     U, S, V = torch.svd(H)
+
+    d = -1. if torch.linalg.det(U @ V) < 0 else 1.
+    I = torch.diag(torch.tensor([1, 1, d])).to(A.device).double()
+
     # Rotation matrix
-    R = V.mm(U.T)
+    R = U @ I @ V
     # Translation vector
-    t = b_mean[None, :] - R.mm(a_mean[None, :].T).T
-    t = (t.T).squeeze()
-    return A.mm(R.T) + t, R.T, t
+    t = torch.mean(B.T, dim=1) - R @ torch.mean(A.T, dim=1) # (3,)
+
+    return (R @ A.T + t[:, None]).T.float(), R.T.float(), t.float()
+
+
+def kabsch_numpy(A, B):
+    A = A.astype(np.float64)
+    B = B.astype(np.float64)
+    H = B.T @ A
+    U, S, V = np.linalg.svd(H)
+
+    d = np.sign(np.linalg.det(U @ V))
+    I = np.diag([1, 1, d])
+
+    R = U @ I @ V
+
+    t = np.mean(B.T, axis=1) - R @ np.mean(A.T, axis=1) # (3,)
+
+    return (R @ A.T + t[:, None]).T.astype(float), R.T.astype(float), t.astype(float)
 
 
 def protein_surface_intersection(X, Y, sigma=1.67, gamma=0.67):

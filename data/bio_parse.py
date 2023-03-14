@@ -10,7 +10,7 @@ parser = PDBParser(QUIET=True)
 AA_NAMES_1 = tuple(IUPACData.protein_letters_3to1.values())
 BACKBONE_ATOM = ['N', 'CA', 'C', 'O']
 N_INDEX, CA_INDEX, C_INDEX, O_INDEX = 0, 1, 2, 3
-MAX_CHAINS = 3
+MAX_CHAINS = 5
 
 ### get index of the residue by 3-letter name
 def aa_index_3(aa_name_3):

@@ -49,7 +49,6 @@ def main(args):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    idx = 0
     crmsds, irmsds = [], []
 
     for batch in tqdm(test_loader):
@@ -60,24 +59,23 @@ def main(args):
                     batch[k] = batch[k].to(device)
             # docking
             dock_X = model.dock(**batch)    # (N, 3)
-            X_list = []
-            bid = batch['bid']
-            for i in range(bid[-1] + 1):
-                X_list.append(dock_X[bid == i].cpu().numpy())
 
-        for x in X_list:
-            complex = test_set.data[idx]
-            idx += 1
-            gt_x = np.concatenate((complex.antibody_coord(), complex.antigen_coord()), axis=0)[:, CA_INDEX]
-            seg = np.array([0 for _ in range(len(complex.antibody_seq()))] +
-                           [1 for _ in range(len(complex.antigen_seq()))])
-            assert x.shape[0] == gt_x.shape[0], 'docked coordinates dimension mismatch'
+        bid = batch['bid'].cpu().numpy()
+        Seg = batch['Seg'].cpu().numpy()
+        gt_X = batch['X'][:, CA_INDEX].cpu().numpy()
+        dock_X = dock_X.cpu().numpy()
+        assert dock_X.shape[0] == gt_X.shape[0], 'coordinates dimension mismatch'
+
+        for i in range(bid[-1] + 1):
+            x = dock_X[bid == i]
+            gt_x = gt_X[bid == i]
+            seg = Seg[bid == i]
             crmsd = compute_crmsd(x, gt_x)
             irmsd = compute_irmsd(x, gt_x, seg)
             crmsds.append(crmsd)
             irmsds.append(irmsd)
 
-    for name, val in zip(['RMSD(CA)'], [crmsds], [irmsds]):
+    for name, val in zip(['CRMSD', 'IRMSD'], [crmsds, irmsds]):
         print(f'{name}: {sum(val) / len(val)}')
 
 

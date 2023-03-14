@@ -96,12 +96,8 @@ class Trainer:
             self.train_loader.sampler.set_epoch(self.epoch)
         t_iter = tqdm(self.train_loader) if self._is_main_proc() else self.train_loader
         for batch in t_iter:
-            try:
-                batch = self.to_device(batch, device)
-                loss = self.train_step(batch, self.global_step)
-            except Exception as e:
-                print_log(f"{e}", level='ERROR')
-                continue
+            batch = self.to_device(batch, device)
+            loss = self.train_step(batch, self.global_step)
             self.optimizer.zero_grad()
             loss.backward()
             if self.config.grad_clip is not None:

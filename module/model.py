@@ -9,7 +9,7 @@ from torch_scatter import scatter_mean
 import sys
 sys.path.append('..')
 from data.bio_parse import CA_INDEX
-from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch, protein_surface_intersection
+from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch_torch, protein_surface_intersection
 from utils.logger import print_log
 from .embed import ComplexGraph
 from .gnn import PTA_EGNN, unsorted_segment_mean
@@ -45,6 +45,8 @@ class ExpDock(nn.Module):
             self.register_parameter(f'w2_mat_{i}', nn.Parameter(torch.rand(hidden_size, hidden_size)))
 
     def forward(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
+        X = X.clone()
+
         device = X.device
         # center to antigen
         X = self.normalizer.centering(X, center, bid)
@@ -54,6 +56,13 @@ class ExpDock(nn.Module):
         keypoints = self.normalizer.centering(keypoints, center, k_bid)
         keypoints = self.normalizer.normalize(keypoints).float()
         trans_keypoints = keypoints.clone()
+
+        # rotate and translate for antibodies, X' = XR + t
+        rot, trans = self.sample_transformation(bid)
+        for i in range(len(rot)):
+            ab_idx = torch.logical_and(Seg == 0, bid == i)
+            X[ab_idx] = X[ab_idx] @ rot[i] + trans[i]
+            trans_keypoints[k_bid == i] = torch.mm(trans_keypoints[k_bid == i], rot[i]) + trans[i]
 
         node_attr, edges, edge_attr = self.graph_constructor(
             X, S, RP, ID, Seg, bid
@@ -65,12 +74,6 @@ class ExpDock(nn.Module):
 
         # CA atoms only
         X = X[:, CA_INDEX]      # (N, 3)
-        # rotate and translate for antibodies, X' = XR + t
-        rot, trans = self.sample_transformation(bid)
-        for i in range(len(rot)):
-            ab_idx = torch.logical_and(Seg == 0, bid == i)
-            X[ab_idx] = torch.mm(X[ab_idx], rot[i]) + trans[i]
-            trans_keypoints[k_bid == i] = torch.mm(trans_keypoints[k_bid == i], rot[i]) + trans[i]
         init_X = X.clone()
 
         # normal vectors
@@ -95,7 +98,6 @@ class ExpDock(nn.Module):
                 torch.norm(coord_diff, dim=-1).clip(min=1e-3).unsqueeze(1).pow(-3), coord_nvec_prod
                 ), row, num_segments=X.shape[0]
             ).squeeze().abs().sqrt()   # (N,)
-            fb_loss_n = (1. + fb_loss_n).log()
             fb_loss_n = scatter_mean(fb_loss_n, index=bid, dim=0)   # (bs)
             fb_loss += fb_loss_n.mean()
         fb_loss /= self.n_layers
@@ -143,15 +145,15 @@ class ExpDock(nn.Module):
             del D2  # free memory
             torch.cuda.empty_cache()
             # compute dock loss
-            _, R, t = kabsch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
+            _, R, t = kabsch_torch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
             dock_loss += F.mse_loss(torch.mm(rot[i], R), torch.eye(3).to(device))
-            dock_loss += F.mse_loss(torch.mm(trans[i][None, :], R), -t.unsqueeze(0))
+            dock_loss += F.mse_loss(torch.mm(trans[i][None, :], R), -t[None, :])
             # compute match loss
             D12 = torch.cdist(P2[min_indices_1], Y2)    # (K, K)
             min_indices_12 = torch.argmin(D12, dim=1)   # (K,)
             max_indices_12 = torch.argmax(D12, dim=1)   # (K,)
             match_loss += 1. / self.n_keypoints * \
-                          (1. + ((1. - 2 * f_n_prob) * YH1.mul(YH2[max_indices_12]).sum(dim=-1) -
+                          (1.0001 + ((1. - 2 * f_n_prob) * YH1.mul(YH2[max_indices_12]).sum(dim=-1) -
                                  YH1.mul(YH2[min_indices_12]).sum(dim=-1))
                            .exp()).log().mean(dim=0)
             del D12
@@ -159,7 +161,7 @@ class ExpDock(nn.Module):
             min_indices_21 = torch.argmin(D21, dim=1)  # (K,)
             max_indices_21 = torch.argmax(D21, dim=1)  # (K,)
             match_loss += 1. / self.n_keypoints * \
-                          (1. + ((1. - 2 * f_n_prob) * YH2.mul(YH1[max_indices_21]).sum(dim=-1) -
+                          (1.0001 + ((1. - 2 * f_n_prob) * YH2.mul(YH1[max_indices_21]).sum(dim=-1) -
                                  YH2.mul(YH1[min_indices_21]).sum(dim=-1))
                            .exp()).log().mean(dim=0)
             del D21
@@ -175,10 +177,11 @@ class ExpDock(nn.Module):
         match_loss /= len(rot)
         si_loss /= len(rot)
 
-        print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
-                  f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
-        loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
-        return loss, (fb_loss, ot_loss, dock_loss, match_loss, si_loss)
+        # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
+        #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
+        # loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
+        loss = fb_loss + ot_loss + dock_loss + match_loss
+        return loss, (fb_loss, ot_loss, dock_loss, match_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
         device = X.device
@@ -186,6 +189,12 @@ class ExpDock(nn.Module):
         X = self.normalizer.centering(X, center, bid)
         # normalize X to approximately normal distribution
         X = self.normalizer.normalize(X).float()
+
+        # rotate and translate for antibodies, X' = XR + t
+        rot, trans = self.sample_transformation(bid)
+        for i in range(len(rot)):
+            ab_idx = torch.logical_and(Seg == 0, bid == i)
+            X[ab_idx] = X[ab_idx] @ rot[i] + trans[i]
 
         node_attr, edges, edge_attr = self.graph_constructor(
             X, S, RP, ID, Seg, bid
@@ -196,11 +205,6 @@ class ExpDock(nn.Module):
 
         # CA atoms only
         X = X[:, CA_INDEX]  # (N, 3)
-        # rotate and translate for antibodies, X' = XR + t
-        rot, trans = self.sample_transformation(bid)
-        for i in range(len(rot)):
-            ab_idx = torch.logical_and(Seg == 0, bid == i)
-            X[ab_idx] = torch.mm(X[ab_idx], rot[i]) + trans[i]
         init_X = X.clone()
 
         # normal vectors
@@ -238,13 +242,13 @@ class ExpDock(nn.Module):
                 ).squeeze()  # (N,)
                 alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
                 Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
-            _, R, t = kabsch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
-            X[ab_idx] = X[ab_idx].mm(R) + t
+            _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
+            init_X[ab_idx] = init_X[ab_idx].mm(R) + t
 
-        X = self.normalizer.unnormalize(X)
-        X = self.normalizer.uncentering(X, center, bid)
+        init_X = self.normalizer.unnormalize(init_X)
+        init_X = self.normalizer.uncentering(init_X, center, bid)
 
-        return X
+        return init_X
 
 
     def sample_transformation(self, bid):
