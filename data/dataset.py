@@ -171,7 +171,7 @@ class SabDabDataset(torch.utils.data.Dataset):
             center = np.mean(ag_bb_coord.reshape(-1, 3), axis=0)
 
             # keypoint pairs
-            keypoints = np.asarray(item.find_keypoint(threshold=10))
+            keypoints = item.find_keypoint(threshold=10)
 
             assert ab_bb_coord.ndim == 3, f'invalid antibody coordinate dimension: {ab_bb_coord.ndim}'
             assert ag_bb_coord.ndim == 3, f'invalid antigen coordinate dimension: {ag_bb_coord.ndim}'

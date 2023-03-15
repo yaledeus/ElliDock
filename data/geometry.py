@@ -96,43 +96,88 @@ def rand_rotation_matrix():
     return q
 
 
-def kabsch_torch(A, B):
+def kabsch_torch(P: torch.Tensor, Q: torch.Tensor):
     """
-    :param A: (N, 3)
-    :param B: (N, 3)
-    :return: AR + t, R, t such that minimize RMSD(AR + t, B)
+    :param P: (N, 3)
+    :param Q: (N, 3)
+    :return: P @ R + t, R, t such that minimize RMSD(PR + t, B)
     """
+    P = P.double()
+    Q = Q.double()
+
+    PC = torch.mean(P, dim=0)
+    QC = torch.mean(Q, dim=0)
+
+    # centering
+    UP = P - PC
+    UQ = Q - QC
+
     # Covariance matrix
-    A = A.double()
-    B = B.double()
-    H = B.T @ A
-    U, S, V = torch.svd(H)
+    C = UP.T @ UQ
+    V, S, W = torch.linalg.svd(C)
 
-    d = -1. if torch.linalg.det(U @ V) < 0 else 1.
-    I = torch.diag(torch.tensor([1, 1, d])).to(A.device).double()
+    d = (torch.linalg.det(V) * torch.linalg.det(W)) < 0.0
 
-    # Rotation matrix
-    R = U @ I @ V
-    # Translation vector
-    t = torch.mean(B.T, dim=1) - R @ torch.mean(A.T, dim=1) # (3,)
+    # avoid inplace modify
+    V_R = V.clone()
+    if d:
+        V_R[:, -1] = -V[:, -1]
 
-    return (R @ A.T + t[:, None]).T.float(), R.T.float(), t.float()
+    R: torch.Tensor = V_R @ W
 
+    t = QC - PC @ R  # (3,)
 
-def kabsch_numpy(A, B):
-    A = A.astype(np.float64)
-    B = B.astype(np.float64)
-    H = B.T @ A
-    U, S, V = np.linalg.svd(H)
+    return (UP @ R + QC).float(), R.float(), t.float()
 
-    d = np.sign(np.linalg.det(U @ V))
-    I = np.diag([1, 1, d])
+"""
+test for kabsch algorithm
+# Test Case 1: Simple test case
+A = torch.tensor([[0, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=torch.float)
+B = A @ torch.diag(torch.tensor([1, 1, -1]).float()) # Rotate A 180 degrees around Z-axis and flip Z
+C, R, t = kabsch_torch(B, A)
+assert np.allclose(C, A)
 
-    R = U @ I @ V
+# Test Case 2: Random point cloud with uniform translation and rotation
+np.random.seed(0)
+A = torch.tensor(np.random.rand(100, 3), dtype=torch.float)
+R = rand_rotation_matrix()
+t = torch.tensor(np.random.rand(3), dtype=torch.float)
+B = A @ R + t
+C, R_est, t_est = kabsch_torch(B, A)
+assert np.allclose(C, A, atol=1e-3)
 
-    t = np.mean(B.T, axis=1) - R @ np.mean(A.T, axis=1) # (3,)
+# Test Case 3: Identity transformation
+A = torch.tensor(np.random.rand(100, 3), dtype=torch.float)
+B = A
+C, R_est, t_est = kabsch_torch(B, A)
+assert np.allclose(C, A, atol=1e-4)
+assert np.allclose(R_est, np.eye(3), atol=1e-4)
+assert np.allclose(t_est, np.zeros(3), atol=1e-4)
+"""
 
-    return (R @ A.T + t[:, None]).T.astype(float), R.T.astype(float), t.astype(float)
+def kabsch_numpy(P: np.ndarray, Q: np.ndarray):
+    P = P.astype(np.float64)
+    Q = Q.astype(np.float64)
+
+    PC = np.mean(P, axis=0)
+    QC = np.mean(Q, axis=0)
+
+    UP = P - PC
+    UQ = Q - QC
+
+    C = UP.T @ UQ
+    V, S, W = np.linalg.svd(C)
+
+    d = (np.linalg.det(V) * np.linalg.det(W)) < 0.0
+
+    if d:
+        V[:, -1] = -V[:, -1]
+
+    R: np.ndarray = V @ W
+
+    t = QC - PC @ R # (3,)
+
+    return (UP @ R + QC).astype(np.float32), R.astype(np.float32), t.astype(np.float32)
 
 
 def protein_surface_intersection(X, Y, sigma=1.67, gamma=0.67):

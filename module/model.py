@@ -187,7 +187,8 @@ class ExpDock(nn.Module):
         # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
         #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
         # loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
-        loss = fb_loss + ot_loss + dock_loss + 5 * match_loss + rmsd_loss
+        # loss = fb_loss + ot_loss + dock_loss + 5 * match_loss + rmsd_loss
+        loss = fb_loss + ot_loss + 5 * match_loss + dock_loss + rmsd_loss
         return loss, (fb_loss, ot_loss, dock_loss, match_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):

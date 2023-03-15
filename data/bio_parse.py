@@ -4,6 +4,7 @@ from Bio.Data import IUPACData
 from typing import List
 
 import numpy as np
+from scipy.spatial.distance import cdist
 import os
 
 parser = PDBParser(QUIET=True)
@@ -233,18 +234,10 @@ class Complex:
         assert idx in (1, 2, 3), f'invalid index: {idx}'
         return self.cdr_pos[f'CDR-{chain}{idx}']
 
-    def find_keypoint(self, threshold=10) -> List:
-        keypoints = []
+    def find_keypoint(self, threshold=10) -> np.ndarray:
         antibody_ca_coord = self.antibody_coord()[:, CA_INDEX]     # CA coordinates, (N, 3)
         antigen_ca_coord = self.antigen_coord()[:, CA_INDEX]
-        for i in range(antibody_ca_coord.shape[0]):
-            ab_ca = antibody_ca_coord[i].reshape(1, -1)     # (1, 3)
-            dist = (antigen_ca_coord - ab_ca) ** 2
-            dist = np.sqrt(dist.sum(axis=-1))
-            valid_ag_ca_list = np.where(dist < threshold)[0]
-            ab_ca = ab_ca.squeeze()     # (3,)
-            for j in valid_ag_ca_list:
-                ag_ca = antigen_ca_coord[j]
-                keypoint_coord = 0.5 * (ab_ca + ag_ca)
-                keypoints.append(keypoint_coord)
+        abag_dist = cdist(antibody_ca_coord, antigen_ca_coord)
+        ab_idx, ag_idx = np.where(abag_dist < threshold)
+        keypoints = 0.5 * (antibody_ca_coord[ab_idx] + antigen_ca_coord[ag_idx])
         return keypoints
