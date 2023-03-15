@@ -219,7 +219,7 @@ class Trainer:
     ########## Overload these functions below ##########
     # define optimizer
     def get_optimizer(self):
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr, eps=1e-3)
         return optimizer
 
     # scheduler example: linear. Return None if no scheduler is needed.

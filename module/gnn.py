@@ -164,10 +164,11 @@ class Tri_Att_GCL(nn.Module):
             # set redundant node k's value to 0
             tri_k[redundant] = 0.
             tri_b[redundant] = 0.
-            tri_v[redundant] = 0.
+
             alpha_ijk = 1. / np.sqrt(self.hidden_nf) * torch.sum(q.unsqueeze(1).repeat(1, MAX_K, 1)
                                                                  * tri_k, dim=-1) \
                         + tri_b.squeeze(2)  # (n_edges, MAX_K)
+            alpha_ijk[redundant] = -1e4 # set redundant node k's attention value to 0
             alpha_ijk = F.softmax(alpha_ijk, dim=1) # (n_edges, MAX_K)
             tri_att_val = torch.matmul(alpha_ijk.unsqueeze(1), tri_v).squeeze() # (n_edges, hidden_nf)
 

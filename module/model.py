@@ -52,6 +52,8 @@ class ExpDock(nn.Module):
         X = self.normalizer.centering(X, center, bid)
         # normalize X to approximately normal distribution
         X = self.normalizer.normalize(X).float()
+        # clone original X
+        ori_X = X[:, CA_INDEX].clone()
         # note that normalizing shall not change the distance between nodes
         keypoints = self.normalizer.centering(keypoints, center, k_bid)
         keypoints = self.normalizer.normalize(keypoints).float()
@@ -76,12 +78,14 @@ class ExpDock(nn.Module):
         X = X[:, CA_INDEX]      # (N, 3)
         init_X = X.clone()
 
+        eps = 1e-3
+
         # normal vectors
         cross_seg_idx = torch.where(torch.diff(Seg) != 0)[0]
         shift_X = F.pad(X[1:], pad=(0, 0, 0, 1), value=0.)
         shift_X[cross_seg_idx] = 0.
         nvecs = shift_X - X
-        nvecs = nvecs / (torch.norm(nvecs, dim=-1).unsqueeze(1) + 1e-8)
+        nvecs = nvecs / (torch.norm(nvecs, dim=-1).unsqueeze(1) + eps)
         init_nvecs = nvecs.clone()
 
         H = self.linear_in(node_attr)
@@ -94,10 +98,10 @@ class ExpDock(nn.Module):
             )
             coord_diff = X[row] - X[col]    # (n_edges, 3)
             coord_nvec_prod = torch.mul(coord_diff, nvecs[row]).sum(dim=-1).unsqueeze(1)    # (n_edges, 1)
-            fb_loss_n = unsorted_segment_mean(torch.mul(
-                torch.norm(coord_diff, dim=-1).clip(min=1e-3).unsqueeze(1).pow(-3), coord_nvec_prod
+            fb_loss_n = (unsorted_segment_mean(torch.mul(
+                torch.norm(coord_diff, dim=-1).clip(min=1e-3, max=2).unsqueeze(1).pow(-3), coord_nvec_prod
                 ), row, num_segments=X.shape[0]
-            ).squeeze().abs().sqrt()   # (N,)
+            ).squeeze().abs() + eps).sqrt()   # (N,)
             fb_loss_n = scatter_mean(fb_loss_n, index=bid, dim=0)   # (bs)
             fb_loss += fb_loss_n.mean()
         fb_loss /= self.n_layers
@@ -105,6 +109,7 @@ class ExpDock(nn.Module):
         # optimal transport loss & dock loss & match loss & surface intersection loss
         ot_loss = 0.
         dock_loss = 0.
+        rmsd_loss = 0.
         match_loss = 0.
         si_loss = 0.
 
@@ -153,7 +158,7 @@ class ExpDock(nn.Module):
             min_indices_12 = torch.argmin(D12, dim=1)   # (K,)
             max_indices_12 = torch.argmax(D12, dim=1)   # (K,)
             match_loss += 1. / self.n_keypoints * \
-                          (1.0001 + ((1. - 2 * f_n_prob) * YH1.mul(YH2[max_indices_12]).sum(dim=-1) -
+                          (1 + eps + ((1. - 2 * f_n_prob) * YH1.mul(YH2[max_indices_12]).sum(dim=-1) -
                                  YH1.mul(YH2[min_indices_12]).sum(dim=-1))
                            .exp()).log().mean(dim=0)
             del D12
@@ -161,27 +166,29 @@ class ExpDock(nn.Module):
             min_indices_21 = torch.argmin(D21, dim=1)  # (K,)
             max_indices_21 = torch.argmax(D21, dim=1)  # (K,)
             match_loss += 1. / self.n_keypoints * \
-                          (1.0001 + ((1. - 2 * f_n_prob) * YH2.mul(YH1[max_indices_21]).sum(dim=-1) -
+                          (1 + eps + ((1. - 2 * f_n_prob) * YH2.mul(YH1[max_indices_21]).sum(dim=-1) -
                                  YH2.mul(YH1[min_indices_21]).sum(dim=-1))
                            .exp()).log().mean(dim=0)
             del D21
             torch.cuda.empty_cache()
-            # compute surface intersection loss
-            X1_aligned = X1.mm(R) + t   # (N, 3)
-            si_loss += protein_surface_intersection(X2, X1_aligned).clip(min=0).mean(dim=0)
-            si_loss += protein_surface_intersection(X1_aligned, X2).clip(min=0).mean(dim=0)
+            # compute surface intersection loss and rmsd loss
+            X1_aligned = init_X[ab_idx] @ R + t   # (N, 3)
+            rmsd_loss += F.mse_loss(X1_aligned, ori_X[ab_idx])
+            si_loss += protein_surface_intersection(init_X[ag_idx], X1_aligned).clip(min=0).mean(dim=0)
+            si_loss += protein_surface_intersection(X1_aligned, init_X[ag_idx]).clip(min=0).mean(dim=0)
 
         # normalize
         ot_loss /= len(rot)
         dock_loss /= len(rot)
         match_loss /= len(rot)
+        rmsd_loss /= len(rot)
         si_loss /= len(rot)
 
         # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
         #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
         # loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
-        loss = fb_loss + ot_loss + dock_loss + match_loss
-        return loss, (fb_loss, ot_loss, dock_loss, match_loss)
+        loss = fb_loss + ot_loss + dock_loss + 5 * match_loss + rmsd_loss
+        return loss, (fb_loss, ot_loss, dock_loss, match_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
         device = X.device
@@ -243,7 +250,7 @@ class ExpDock(nn.Module):
                 alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
                 Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
             _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
-            init_X[ab_idx] = init_X[ab_idx].mm(R) + t
+            init_X[ab_idx] = init_X[ab_idx] @ R + t
 
         init_X = self.normalizer.unnormalize(init_X)
         init_X = self.normalizer.uncentering(init_X, center, bid)
