@@ -207,6 +207,15 @@ class SabDabDataset(torch.utils.data.Dataset):
         keys = ['X', 'S', 'RP', 'ID', 'Seg']
         types = [torch.float] + [torch.long for _ in range(4)]
         res = {}
+        # in case batch is null
+        blank_batch = True
+        for item in batch:
+            if not 'Error' in item:
+                blank_batch = False
+                break
+        if blank_batch:
+            return res
+        # collate batch elements
         for key, _type in zip(keys, types):
             val = []
             for item in batch:

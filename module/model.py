@@ -9,7 +9,8 @@ from torch_scatter import scatter_mean
 import sys
 sys.path.append('..')
 from data.bio_parse import CA_INDEX
-from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch_torch, protein_surface_intersection
+from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch_torch, \
+    protein_surface_intersection, max_triangle_area
 from utils.logger import print_log
 from .embed import ComplexGraph
 from .gnn import PTA_EGNN, unsorted_segment_mean
@@ -99,17 +100,19 @@ class ExpDock(nn.Module):
             coord_diff = X[row] - X[col]    # (n_edges, 3)
             coord_nvec_prod = torch.mul(coord_diff, nvecs[row]).sum(dim=-1).unsqueeze(1)    # (n_edges, 1)
             fb_loss_n = (unsorted_segment_mean(torch.mul(
-                torch.norm(coord_diff, dim=-1).clip(min=1e-3, max=2).unsqueeze(1).pow(-3), coord_nvec_prod
+                torch.norm(coord_diff, dim=-1).clip(min=eps).unsqueeze(1).pow(-3), coord_nvec_prod
                 ), row, num_segments=X.shape[0]
             ).squeeze().abs() + eps).sqrt()   # (N,)
             fb_loss_n = scatter_mean(fb_loss_n, index=bid, dim=0)   # (bs)
-            fb_loss += fb_loss_n.mean()
+            fb_loss += fb_loss_n.clip(max=10).mean()
         fb_loss /= self.n_layers
 
-        # optimal transport loss & dock loss & match loss & surface intersection loss
+        # optimal transport loss & dock loss & rmsd loss &
+        # stable loss & match loss & surface intersection loss
         ot_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
+        stable_loss = 0.
         match_loss = 0.
         si_loss = 0.
 
@@ -153,6 +156,9 @@ class ExpDock(nn.Module):
             _, R, t = kabsch_torch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
             dock_loss += F.mse_loss(torch.mm(rot[i], R), torch.eye(3).to(device))
             dock_loss += F.mse_loss(torch.mm(trans[i][None, :], R), -t[None, :])
+            # compute stable loss
+            stable_loss += (1 + eps + (-max_triangle_area(P1[min_indices_1])).exp()).log()
+            stable_loss += (1 + eps + (-max_triangle_area(P2[min_indices_2])).exp()).log()
             # compute match loss
             D12 = torch.cdist(P2[min_indices_1], Y2)    # (K, K)
             min_indices_12 = torch.argmin(D12, dim=1)   # (K,)
@@ -160,7 +166,7 @@ class ExpDock(nn.Module):
             match_loss += 1. / self.n_keypoints * \
                           (1 + eps + ((1. - 2 * f_n_prob) * YH1.mul(YH2[max_indices_12]).sum(dim=-1) -
                                  YH1.mul(YH2[min_indices_12]).sum(dim=-1))
-                           .exp()).log().mean(dim=0)
+                           .exp()).log().clip(max=2).mean(dim=0)
             del D12
             D21 = torch.cdist(P1[min_indices_2], Y1)   # (K, K)
             min_indices_21 = torch.argmin(D21, dim=1)  # (K,)
@@ -168,7 +174,7 @@ class ExpDock(nn.Module):
             match_loss += 1. / self.n_keypoints * \
                           (1 + eps + ((1. - 2 * f_n_prob) * YH2.mul(YH1[max_indices_21]).sum(dim=-1) -
                                  YH2.mul(YH1[min_indices_21]).sum(dim=-1))
-                           .exp()).log().mean(dim=0)
+                           .exp()).log().clip(max=2).mean(dim=0)
             del D21
             torch.cuda.empty_cache()
             # compute surface intersection loss and rmsd loss
@@ -180,16 +186,15 @@ class ExpDock(nn.Module):
         # normalize
         ot_loss /= len(rot)
         dock_loss /= len(rot)
+        stable_loss /= len(rot)
         match_loss /= len(rot)
         rmsd_loss /= len(rot)
         si_loss /= len(rot)
 
         # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
         #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
-        # loss = fb_loss + ot_loss + dock_loss + 10 * match_loss + 0.2 * si_loss
-        # loss = fb_loss + ot_loss + dock_loss + 5 * match_loss + rmsd_loss
-        loss = fb_loss + ot_loss + 5 * match_loss + dock_loss + rmsd_loss
-        return loss, (fb_loss, ot_loss, dock_loss, match_loss, rmsd_loss)
+        loss = fb_loss + ot_loss + dock_loss + stable_loss + 5 * match_loss + 0.1 * rmsd_loss
+        return loss, (fb_loss, ot_loss, dock_loss, stable_loss, match_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
         device = X.device

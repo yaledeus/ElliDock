@@ -191,6 +191,71 @@ def protein_surface_intersection(X, Y, sigma=1.67, gamma=0.67):
                              .exp().sum(dim=1)).log())
 
 
+def max_triangle_area(points):
+    """
+    :param points: (N, 3)
+    :return: maximum triangle area, torch.float
+    """
+    sorted_indices = torch.argsort(points[:, 0])
+    return _max_triangle_area(points[sorted_indices])
+
+
+# O(nlogn)
+def _max_triangle_area(points):
+    device = points.device
+    # less than 3 points, return 0
+    if len(points) <= 2:
+        return torch.tensor(0).float().to(device)
+    elif len(points) == 3:
+        return _triangle_area(points[0], points[1], points[2])
+
+    mid = len(points) // 2
+    left_points = points[:mid]
+    right_points = points[mid:]
+    left_max_area = _max_triangle_area(left_points)
+    right_max_area = _max_triangle_area(right_points)
+
+    mid_x = (left_points[-1][0] + right_points[0][0]) / 2
+    left_index = mid - 1
+    right_index = mid
+    mid_max_area = torch.tensor(0).float().to(device)
+    while left_index >= 0 and right_index < len(points):
+        left_point = points[left_index]
+        right_point = points[right_index]
+        if left_point[0] < mid_x and right_point[0] >= mid_x:
+            area = _triangle_area(left_point, right_point, points[mid])
+            if area > mid_max_area:
+                mid_max_area = area
+            left_index -= 1
+        elif left_point[0] >= mid_x:
+            left_index -= 1
+        else:
+            right_index += 1
+
+    if mid_max_area >= left_max_area and mid_max_area >= right_max_area:
+        return mid_max_area
+    elif left_max_area >= mid_max_area and left_max_area >= right_max_area:
+        return left_max_area
+    else:
+        return right_max_area
+
+
+def _triangle_area(p1, p2, p3):
+    v1 = p2 - p1
+    v2 = p3 - p1
+    cross_product = torch.cross(v1, v2)
+    area = 0.5 * torch.norm(cross_product)
+    return area
+
+"""
+test: max_triangle_area
+N = 100
+A = torch.randn(N, 3)
+print(f"{N} point cloud: {A}")
+print(f"maximum triangle area: {max_triangle_area(A)}")
+"""
+
+
 class CoordNomralizer(nn.Module):
     def __init__(self, mean=None, std=None) -> None:
         super().__init__()

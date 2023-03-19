@@ -96,8 +96,21 @@ class Trainer:
             self.train_loader.sampler.set_epoch(self.epoch)
         t_iter = tqdm(self.train_loader) if self._is_main_proc() else self.train_loader
         for batch in t_iter:
+            if not bool(batch):
+                continue
             batch = self.to_device(batch, device)
-            loss = self.train_step(batch, self.global_step)
+            try:
+                loss = self.train_step(batch, self.global_step)
+            except RuntimeError as e:
+                if 'out of memory' in str(e):
+                    print_log('CUDA out of memory, skip batch', level='WARN')
+                    torch.cuda.empty_cache()
+                    continue
+                else:
+                    raise e
+            if loss.item() > 1e2:
+                print_log(f'too large loss: {loss.item()}, skip batch', level='WARN')
+                continue
             self.optimizer.zero_grad()
             loss.backward()
             if self.config.grad_clip is not None:

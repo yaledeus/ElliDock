@@ -174,6 +174,10 @@ class Tri_Att_GCL(nn.Module):
 
             output.append(torch.mul(g, tri_att_val))
 
+            # free memory
+            del alpha_ijk
+            torch.cuda.empty_cache()
+
 
         output = torch.cat(output, dim=-1)
         output = self.linear_out(output)        # (n_edges, output_nf)

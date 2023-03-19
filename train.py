@@ -41,6 +41,7 @@ def parse():
                         help="Local rank. Necessary for using the torch.distributed.launch utility.")
 
     # model
+    parser.add_argument('--ckpt', type=str, default=None, help='Path to checkpoint')
     parser.add_argument('--model_type', type=str, required=True, choices=['ExpDock'], help='Type of model')
     parser.add_argument('--embed_dim', type=int, default=64, help='dimension of residue/atom embedding')
     parser.add_argument('--hidden_size', type=int, default=128, help='dimension of hidden states')
@@ -73,9 +74,12 @@ def main(args):
     if args.model_type == 'ExpDock':
         from trainer import ExpDockTrainer as Trainer
         from module import ExpDock
-        model = ExpDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
-                        att_heads=args.att_heads, n_layers=args.n_layers,
-                        n_keypoints=args.n_keypoints, dropout=args.dropout)
+        if not args.ckpt:
+            model = ExpDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
+                            att_heads=args.att_heads, n_layers=args.n_layers,
+                            n_keypoints=args.n_keypoints, dropout=args.dropout)
+        else:
+            model = torch.load(args.ckpt, map_location='cpu')
 
 
     if len(args.gpus) > 1:

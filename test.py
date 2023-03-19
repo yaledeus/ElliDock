@@ -76,7 +76,9 @@ def main(args):
             irmsds.append(irmsd)
 
     for name, val in zip(['CRMSD', 'IRMSD'], [crmsds, irmsds]):
-        print(f'{name}: {sum(val) / len(val)}')
+        print(f'{name} median: {np.median(val)}', end=' ')
+        print(f'{name} mean: {np.mean(val)}', end=' ')
+        print(f'{name} std: {np.std(val)}')
 
 
 def parse():
