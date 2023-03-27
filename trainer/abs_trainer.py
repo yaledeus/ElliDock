@@ -101,6 +101,11 @@ class Trainer:
             batch = self.to_device(batch, device)
             try:
                 loss = self.train_step(batch, self.global_step)
+                if loss.item() > 1e2:
+                    print_log(f'too large loss: {loss.item()}, skip batch', level='WARN')
+                    continue
+                self.optimizer.zero_grad()
+                loss.backward()
             except RuntimeError as e:
                 if 'out of memory' in str(e):
                     print_log('CUDA out of memory, skip batch', level='WARN')
@@ -108,11 +113,6 @@ class Trainer:
                     continue
                 else:
                     raise e
-            if loss.item() > 1e2:
-                print_log(f'too large loss: {loss.item()}, skip batch', level='WARN')
-                continue
-            self.optimizer.zero_grad()
-            loss.backward()
             if self.config.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
             self.optimizer.step()

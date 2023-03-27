@@ -19,6 +19,8 @@ def compute_irmsd(X, Y, seg, threshold=8):
     Y_ab, Y_ag = Y[seg == 0], Y[seg == 1]
     abag_dist = cdist(Y_ab, Y_ag)
     ab_idx, ag_idx = np.where(abag_dist < threshold)
+    ab_idx = np.unique(ab_idx)
+    ag_idx = np.unique(ag_idx)
     ab_dist = np.sum((X_ab[ab_idx] - Y_ab[ab_idx]) ** 2, axis=-1)
     ag_dist = np.sum((X_ag[ag_idx] - Y_ag[ag_idx]) ** 2, axis=-1)
     dist = np.hstack([ab_dist, ag_dist])

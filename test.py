@@ -9,8 +9,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from data import SabDabDataset
+from data import SabDabDataset, DBDataset, DIPSDataset
 from data.bio_parse import CA_INDEX
+from module.model import sample_transformation
 from evaluate import compute_crmsd, compute_irmsd
 
 
@@ -25,10 +26,16 @@ def main(args):
     print(f'Model type: {model_type}')
 
     # load test set
-    if model_type == 'ExpDock':
+    if args.dataset == 'SabDab':
         Dataset = SabDabDataset
+    elif args.dataset == 'DB5.5':
+        Dataset = DBDataset
+    elif args.dataset == 'DIPS':
+        Dataset = DIPSDataset
     else:
         raise ValueError(f'model type {model_type} not implemented')
+
+    expansion = 15
 
     test_set = Dataset(args.test_set)
     test_loader = DataLoader(test_set, batch_size=args.batch_size,
@@ -52,17 +59,24 @@ def main(args):
     crmsds, irmsds = [], []
 
     for batch in tqdm(test_loader):
+        # clone original X
+        gt_X = batch['X'][:, CA_INDEX].cpu().numpy()
+        # inference
         with torch.no_grad():
             # move data
             for k in batch:
                 if hasattr(batch[k], 'to'):
                     batch[k] = batch[k].to(device)
+            # transformation
+            rot, trans = sample_transformation(batch['bid'])
+            for i in range(len(rot)):
+                ab_idx = torch.logical_and(batch['Seg'] == 0, batch['bid'] == i)
+                batch['X'][ab_idx] = batch['X'][ab_idx] @ rot[i] + trans[i] * expansion
             # docking
             dock_X = model.dock(**batch)    # (N, 3)
 
         bid = batch['bid'].cpu().numpy()
         Seg = batch['Seg'].cpu().numpy()
-        gt_X = batch['X'][:, CA_INDEX].cpu().numpy()
         dock_X = dock_X.cpu().numpy()
         assert dock_X.shape[0] == gt_X.shape[0], 'coordinates dimension mismatch'
 
@@ -83,6 +97,7 @@ def main(args):
 
 def parse():
     parser = argparse.ArgumentParser(description='Docking given antibody-antigen complex')
+    parser.add_argument('--dataset', type=str, required=True, default='SabDab', choices=['SabDab', 'DB5.5', 'DIPS'])
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint')
     parser.add_argument('--test_set', type=str, required=True, help='Path to test set')
     parser.add_argument('--save_dir', type=str, default=None, help='Directory to save generated antibodies')

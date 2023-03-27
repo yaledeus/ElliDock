@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 from torch import nn
@@ -55,13 +56,14 @@ def get_backbone_dihedral_angles(coord):
     bb_dihedral = torch.stack([omega, phi, psi], dim=-1)
     return bb_dihedral
 
+
 def pairwise_dihedrals(coord, edges):
     """
     Args:
         coord:  (N, n_channel, 3).
-        edges: (2, n_edge).
+        edges: (2, n_edges).
     Returns:
-        Inter-residue Phi and Psi angles, (n_edge, 2).
+        Inter-residue Phi and Psi angles, (n_edges, 2).
     """
     row, col = edges
     coord_N_src = coord[row, N_INDEX]  # (n_edge, 3)
@@ -84,6 +86,45 @@ def pairwise_dihedrals(coord, edges):
     )
     ir_dihed = torch.stack([ir_phi, ir_psi], dim=-1)
     return ir_dihed
+
+
+def reletive_position_orientation(coord, edges):
+    """
+    Args:
+        coord:  (N, n_channel, 3).
+        edges: (2, n_edges).
+    Returns:
+        Inter-residue relative position, (n_edges, 3).
+    """
+    row, col = edges
+    coord_N_src = coord[row, N_INDEX]  # (n_edges, 3)
+    coord_CA_src = coord[row, CA_INDEX]
+    coord_CA_dst = coord[col, CA_INDEX]
+    coord_C_src = coord[row, C_INDEX]
+
+    coord_diff = coord_CA_src - coord_CA_dst    # (n_edges, 3)
+
+    eps = 1e-6
+
+    vec_u = coord_N_src - coord_CA_src  # (n_edges, 3)
+    vec_u = vec_u / (torch.norm(vec_u, dim=-1, keepdim=True) + eps)
+    vec_t = coord_C_src - coord_CA_src  # (n_edges, 3)
+    vec_t = vec_t / (torch.norm(vec_t, dim=-1, keepdim=True) + eps)
+    vec_n = torch.cross(vec_u, vec_t)   # (n_edges, 3)
+    vec_n = vec_n / (torch.norm(vec_n, dim=-1, keepdim=True) + eps)
+    vec_v = torch.cross(vec_n, vec_u)   # (n_edges, 3)
+    vec_v = vec_v / (torch.norm(vec_v, dim=-1, keepdim=True) + eps)
+
+    local_coord_mat = torch.stack([vec_n, vec_u, vec_v], dim=1)    # (n_edges, 3, 3)
+
+    rp = torch.matmul(local_coord_mat, coord_diff.unsqueeze(-1)).squeeze()  # (n_edges, 3)
+    feat_q = torch.matmul(local_coord_mat, vec_n.unsqueeze(-1)).squeeze()   # (n_edges, 3)
+    feat_k = torch.matmul(local_coord_mat, vec_u.unsqueeze(-1)).squeeze()  # (n_edges, 3)
+    feat_t = torch.matmul(local_coord_mat, vec_v.unsqueeze(-1)).squeeze()  # (n_edges, 3)
+
+    rel_pos_ori = torch.cat([rp, feat_q, feat_k, feat_t], dim=-1)   # (n_edges, 3 * 4)
+
+    return rel_pos_ori
 
 
 def rand_rotation_matrix():
@@ -248,20 +289,23 @@ def _triangle_area(p1, p2, p3):
     return area
 
 """
-test: max_triangle_area
+### test: max_triangle_area
 N = 100
 A = torch.randn(N, 3)
 print(f"{N} point cloud: {A}")
 print(f"maximum triangle area: {max_triangle_area(A)}")
+
+B = torch.tensor([[0, 0, 0], [1, 0, 0], [0, 1, 0]]).float()
+print(f"maximum area of point cloud B should be 0.5: {max_triangle_area(B)}")
 """
 
 
 class CoordNomralizer(nn.Module):
     def __init__(self, mean=None, std=None) -> None:
         super().__init__()
-        self.mean = torch.tensor([-0.50, 0.22, 0.13]) \
+        self.mean = torch.tensor([-0.49545217, 0.2199743, 0.12866335]) \
                     if mean is None else torch.tensor(mean)
-        self.std = torch.tensor([14.9, 15.0, 17.3]) \
+        self.std = torch.tensor([14.85880611, 14.99745863, 17.27655463]) \
                     if std is None else torch.tensor(std)
         self.mean = nn.parameter.Parameter(self.mean, requires_grad=False)
         self.std = nn.parameter.Parameter(self.std, requires_grad=False)

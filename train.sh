@@ -21,6 +21,7 @@ if [ $MODEL = "ExpDock" ]; then
 fi
 
 BATCH_SIZE=16
+DATASET=SabDab
 
 ######### end of adjust ##########
 
@@ -61,20 +62,21 @@ else
 fi
 
 ${PREFIX} train.py \
+    --dataset $DATASET \
     --train_set $TRAIN_SET \
     --valid_set $VALID_SET \
     --save_dir $SAVE_DIR \
     --model_type $MODEL \
-    --lr 1e-4 \
+    --lr 8e-5 \
     --max_epoch 500 \
     --patience 10 \
     --save_topk 10 \
     --embed_dim 64 \
-    --hidden_size 192 \
+    --hidden_size 128 \
     --k_neighbors 10 \
     --n_layers 4 \
     --n_keypoints 10 \
-    --att_heads 4 \
+    --att_heads 1 \
     --shuffle \
     --batch_size ${BATCH_SIZE} \
     --gpu "${!GPU_ARR[@]}"

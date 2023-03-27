@@ -11,3 +11,6 @@ __pycache__
 *.svg
 *.log
 *.pdb
+*.dill
+
+**benchmark5.5/

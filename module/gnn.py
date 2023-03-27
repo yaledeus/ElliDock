@@ -4,6 +4,7 @@ import numpy as np
 from torch import nn
 import torch.nn.functional as F
 import torch
+from typing import List
 
 
 def coord2radial(edges, coord):
@@ -17,11 +18,50 @@ def coord2radial(edges, coord):
     return radial, coord_diff
 
 
-def vec2product(edges, vec):
+def coord2radialplus(edges, coord, scale: List):
     row, col = edges
-    product = torch.mul(vec[row], vec[col])     # (n_edge, 3)
-    product = product.sum(dim=-1).reshape(-1, 1)    # (n_edge, 1)
+    coord_diff = coord[row] - coord[col]    # (n_edges, 3)
+
+    norm = torch.norm(coord_diff, dim=-1, keepdim=True) + 1e-8
+    coord_diff = coord_diff / norm
+    init_radial = torch.sum(coord_diff ** 2, 1).unsqueeze(1)    # (n_edges, 1)
+
+    radial = []
+    for s in scale:
+        feat_dist = (-0.5 / (2.25 ** s) * init_radial).exp()    # (n_edges, 1)
+        radial.append(feat_dist)
+
+    radial = torch.cat(radial, dim=-1)  # (n_edges, *)
+
+    return radial, coord_diff
+
+
+def vec2product(edges, vec):
+    # vec: [N, *, 3]
+    row, col = edges
+    n_edges = edges.shape[1]
+    product = torch.mul(vec[row], vec[col])     # (n_edges, *, 3)
+    product = product.sum(dim=-1).reshape(n_edges, -1)  # (n_edges, *)
     return product
+
+
+def coord2nforce(edges, coord, order: List):
+    row, col = edges
+    coord_diff = coord[row] - coord[col]    # (n_edges, 3)
+    eps = 1e-8
+    nvecs = []
+
+    for alpha in order:
+        ordered_norm = torch.norm(coord_diff, dim=-1, keepdim=True).pow(-1 - alpha) # (n_edges, 1)
+        ordered_diff = torch.mul(ordered_norm, coord_diff)  # (n_edges, 3)
+
+        nforce = unsorted_segment_mean(ordered_diff, row, num_segments=coord.shape[0])  # (N, 3)
+        # normalize
+        nforce = nforce / (torch.norm(nforce, dim=-1, keepdim=True) + eps)
+        nvecs.append(nforce)
+
+    nvecs = torch.stack(nvecs, dim=1)  # (N, *, 3)
+    return nvecs
 
 
 ### find k satisfies i->j, i->k, j->k
@@ -56,7 +96,7 @@ class Ch_Pos_GCL(nn.Module):
         super(Ch_Pos_GCL, self).__init__()
         self.attention = attention
         input_edge = input_nf * 2 + hidden_nf * 2   # v_i, v_j, h_i, h_j
-        edge_coords_nf = 2          # <n_i, n_j>, d_ij
+        edge_coords_nf = 20          # <n_i, n_j> with order = {2,3,4,5,6}, d_ij with scale {1.5^x|x=0,1,...,14}
 
         self.dropout = nn.Dropout(dropout)
 
@@ -68,7 +108,7 @@ class Ch_Pos_GCL(nn.Module):
         )
 
         self.pos_edge_mlp = nn.Sequential(
-            nn.Linear(edge_coords_nf, hidden_nf),
+            nn.Linear(edge_coords_nf + edges_in_d, hidden_nf),
             act_fn,
             nn.Linear(hidden_nf, hidden_nf),
             act_fn
@@ -87,19 +127,21 @@ class Ch_Pos_GCL(nn.Module):
 
     def forward(self, h, coord, edges, nvecs, node_attr, edge_attr=None):
         row, col = edges
-        radial, coord_diff = coord2radial(edges, coord)
-        nprod = vec2product(edges, nvecs)
+        # radial, coord_diff = coord2radial(edges, coord)
+        radial, coord_diff = coord2radialplus(edges, coord, scale=[s for s in range(15)])
+        nprod = vec2product(edges, nvecs)   # (n_edges, *)
 
         if edge_attr is None:
             chem = torch.cat([h[row], h[col], node_attr[row], node_attr[col]], dim=1)
+            pos = torch.cat([nprod, radial], dim=1)
         else:
             chem = torch.cat([h[row], h[col], node_attr[row], node_attr[col], edge_attr], dim=1)
-        chem = self.ch_edge_mlp(chem)
+            pos = torch.cat([nprod, radial, edge_attr], dim=1)
 
-        pos = torch.cat([nprod, radial], dim=1)
+        chem = self.ch_edge_mlp(chem)
         pos = self.pos_edge_mlp(pos)
 
-        out = torch.mul(self.shallow_mlp(chem), pos)   # (n_edge, hidden_nf)
+        out = torch.mul(self.shallow_mlp(chem), pos)    # (n_edge, hidden_nf)
 
         out = self.dropout(out)
 
@@ -218,21 +260,15 @@ class PTA_EGNN(nn.Module):
             nn.Linear(hidden_nf, 1)
         )
 
-        self.phi_n = nn.Sequential(
-            nn.Linear(hidden_nf, hidden_nf),
-            act_fn,
-            nn.Linear(hidden_nf, 1)
-        )
-
         self.phi_h = nn.Sequential(
             nn.Linear(hidden_nf * 2 + input_nf, hidden_nf),
             act_fn,
             nn.Linear(hidden_nf, hidden_nf)
         )
 
-    def forward(self, h, coord, edges, nvecs, edge_attr, node_attr, init_coord, init_nvecs, klist):
+    def forward(self, h, coord, edges, nvecs, edge_attr, node_attr, init_coord, klist):
 
-        # z, chem, pos: (n_edge, hidden_nf), coord_diff: (n_edge, 3)
+        # z: (n_edge, hidden_nf), coord_diff: (n_edge, 3)
         z, chem, pos, coord_diff = self.ch_pos_gcl(h, coord, edges, nvecs, node_attr, edge_attr)
         # m: (n_edge, hidden_nf)
         m = self.tri_att_gcl(z, klist)
@@ -244,20 +280,13 @@ class PTA_EGNN(nn.Module):
         x_agg = unsorted_segment_mean(x_trans, row, num_segments=coord.shape[0])    # (N, 3)
         coord = ita * init_coord + (1 - ita) * coord + x_agg
 
-        # update normal vectors
-        gamma = .2  # weight
-        n_trans = nvecs[col] * torch.mul(self.phi_u(chem), self.phi_n(pos))
-        n_agg = unsorted_segment_mean(n_trans, row, num_segments=coord.shape[0])    # (N, 3)
-        nvecs = gamma * init_nvecs + (1 - gamma) * nvecs + n_agg
-        # normalize
-        nvecs = nvecs / (torch.norm(nvecs, dim=-1).unsqueeze(1) + 1e-8)
-
         # update h
         beta = .2   # weight
-        m_agg = unsorted_segment_mean(m, row, num_segments=coord.shape[0])  # (N, 3)
+        m_agg = unsorted_segment_mean(m, row, num_segments=coord.shape[0])  # (N, hidden_nf)
         m_all = torch.cat([h, node_attr, m_agg], dim=-1)
         h = beta * h + (1 - beta) * self.phi_h(m_all)
-        return h, coord, nvecs
+
+        return h, coord
 
 
 def unsorted_segment_sum(data, segment_ids, num_segments):

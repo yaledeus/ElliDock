@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 from utils.logger import print_log
 from utils.random_seed import setup_seed, SEED
-from data import SabDabDataset
+from data import SabDabDataset, DBDataset, DIPSDataset
 
 setup_seed(SEED)
 
@@ -20,6 +20,7 @@ def parse():
     parser = argparse.ArgumentParser(description='training')
 
     # data
+    parser.add_argument('--dataset', type=str, required=True, default='SabDab', choices=['SabDab', 'DB5.5', 'DIPS'])
     parser.add_argument('--train_set', type=str, required=True, help='path to train set')
     parser.add_argument('--valid_set', type=str, required=True, help='path to valid set')
 
@@ -56,14 +57,26 @@ def parse():
 
 def main(args):
     ########### load your train / valid set ###########
-    if args.model_type == 'ExpDock':
+    if args.dataset == 'SabDab':
         train_set = SabDabDataset(args.train_set)
         valid_set = SabDabDataset(args.valid_set)
+        collate_fn = SabDabDataset.collate_fn
+        mean = [-0.49545217, 0.2199743, 0.12866335]
+        std = [14.85880611, 14.99745863, 17.27655463]
+    elif args.dataset == 'DB5.5':
+        train_set = DBDataset(args.train_set)
+        valid_set = DBDataset(args.valid_set)
+        collate_fn = DBDataset.collate_fn
+        mean = [0.07196493, 0.06579519, 0.63590974]
+        std = [14.12718586, 14.21111747, 15.96787876]
+    elif args.dataset == 'DIPS':
+        train_set = DIPSDataset(args.train_set)
+        valid_set = DIPSDataset(args.valid_set)
+        collate_fn = DIPSDataset.collate_fn
+        mean = [0.05055815, -0.47526212, 0.21798682]
+        std = [14.0893815, 14.69939329, 14.96120875]
     else:
         raise NotImplemented(f'model {args.model_type} not implemented')
-
-    if args.model_type == 'ExpDock':
-        collate_fn = SabDabDataset.collate_fn
 
     ########## define your model/trainer/trainconfig #########
     config = TrainConfig(args.save_dir, args.lr, args.max_epoch,
@@ -77,7 +90,8 @@ def main(args):
         if not args.ckpt:
             model = ExpDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
                             att_heads=args.att_heads, n_layers=args.n_layers,
-                            n_keypoints=args.n_keypoints, dropout=args.dropout)
+                            n_keypoints=args.n_keypoints, dropout=args.dropout,
+                            mean=mean, std=std)
         else:
             model = torch.load(args.ckpt, map_location='cpu')
 

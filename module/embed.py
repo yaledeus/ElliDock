@@ -6,7 +6,7 @@ from torch import nn
 import sys
 sys.path.append('..')
 from data.bio_parse import AA_NAMES_1, MAX_CHAINS
-from data.geometry import get_backbone_dihedral_angles, pairwise_dihedrals
+from data.geometry import get_backbone_dihedral_angles, pairwise_dihedrals, reletive_position_orientation
 
 
 def sequential_and(*tensors):
@@ -120,16 +120,19 @@ class ComplexGraph(nn.Module):
 
         return edges
 
-    def pairwise_dihedral_embedding(self, X, edges):
-        return pairwise_dihedrals(X, edges)         # (n_edge, 2)
+    def pairwise_embedding(self, X, edges):
+        dihed = pairwise_dihedrals(X, edges)         # (n_edges, 2)
+        rel_pos_ori = reletive_position_orientation(X, edges)   # (n_edges, 12)
+        p_embed = torch.cat([dihed, rel_pos_ori], dim=-1)       # (n_edges, 14)
+        return p_embed
 
 
     def forward(self, X, S, RP, ID, Seg, bid):
-        node_attr = self.embedding(X, S, RP, ID)                        # (N, 2 * embed_size + 3)
+        node_attr = self.embedding(X, S, RP, ID)                        # (N, embed_size + 3)
         edges = self._construct_edges(X, Seg, bid, self.k_neighbors)    # (2, n_edge)
-        edge_attr = pairwise_dihedrals(X, edges)                        # (n_edge, 2)
+        edge_attr = self.pairwise_embedding(X, edges)                   # (n_edge, 14)
         return node_attr, edges, edge_attr
 
     @classmethod
     def feature_dim(cls, embed_size):
-        return (embed_size + 3, 2)      # node_attr, edge_attr
+        return (embed_size + 3, 14)      # node_attr, edge_attr
