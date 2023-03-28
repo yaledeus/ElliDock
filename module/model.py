@@ -9,7 +9,7 @@ import sys
 sys.path.append('..')
 from data.bio_parse import CA_INDEX
 from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch_torch, \
-    protein_surface_intersection, max_triangle_area
+    max_triangle_area
 from .embed import ComplexGraph
 from .gnn import PTA_EGNN, coord2nforce
 from .find_triangular import find_triangular_cython
@@ -45,18 +45,16 @@ class ExpDock(nn.Module):
             self.register_parameter(f'w2_mat_{i}', nn.Parameter(torch.rand(hidden_size, hidden_size)))
 
     def forward(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
-        X = X.clone()
-
         device = X.device
         # center to antigen
         X = self.normalizer.centering(X, center, bid)
         # normalize X to approximately normal distribution
         X = self.normalizer.normalize(X).float()
-        # clone original X
-        ori_X = X[:, CA_INDEX].clone()
+        # clone original X, no grad
+        ori_X = X[:, CA_INDEX].clone().detach_()
         # note that normalizing shall not change the distance between nodes
         keypoints = self.normalizer.centering(keypoints, center, k_bid)
-        keypoints = self.normalizer.normalize(keypoints).float()
+        keypoints = self.normalizer.normalize(keypoints).float().detach_()
         trans_keypoints = keypoints.clone()
 
         # rotate and translate for antibodies, X' = XR + t
@@ -91,25 +89,23 @@ class ExpDock(nn.Module):
             )
 
         # optimal transport loss & keypoint loss & dock loss & rmsd loss &
-        # stable loss & match loss & surface intersection loss
+        # stable loss & match loss
         ot_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
         stable_loss = 0.
         match_loss = 0.
-        # si_loss = 0.
-
-        f_n_prob = .1   # false negative probability
+        balance_loss = 0.
+        # threshold
+        threshold = 10. / torch.mean(self.normalizer.std)
 
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             ag_idx = torch.logical_and(Seg == 1, bid == i)
-            H1, H2 = H[ab_idx], H[ag_idx]
+            H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
             X1, X2 = X[ab_idx], X[ag_idx]   # X1: (N, 3) X2: (M, 3)
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)    # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
-            YH1 = torch.zeros(self.n_keypoints, self.hidden_size).to(device)    # (K, hidden_size)
-            YH2 = torch.zeros(self.n_keypoints, self.hidden_size).to(device)
             for k in range(self.n_keypoints):
                 alpha_1k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
                     torch.mm(H1, self._parameters[f'w1_mat_{k}']),
@@ -117,14 +113,12 @@ class ExpDock(nn.Module):
                 ).squeeze() # (N,)
                 alpha_1k = F.softmax(alpha_1k, dim=0).unsqueeze(1)  # (N, 1)
                 Y1[k] = torch.mm(alpha_1k.T, X1).squeeze()
-                YH1[k] = torch.mm(alpha_1k.T, H1).squeeze()
                 alpha_2k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
                     torch.mm(H2, self._parameters[f'w2_mat_{k}']),
                     H1.T.mean(dim=-1).unsqueeze(1)
                 ).squeeze()  # (N,)
                 alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
                 Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
-                YH2[k] = torch.mm(alpha_2k.T, H2).squeeze()
             P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
             D1 = torch.cdist(Y1, P1)    # (K, S)
             min_indices_1 = torch.argmin(D1, dim=1)     # (K,)
@@ -145,42 +139,53 @@ class ExpDock(nn.Module):
             stable_loss += F.softplus(-max_triangle_area(Y2))
             stable_loss /= 2
             # compute match loss
-            D12 = torch.cdist(P2[min_indices_1], Y2)    # (K, K)
-            min_indices_12 = torch.argmin(D12, dim=1)   # (K,)
-            max_indices_12 = torch.argmax(D12, dim=1)   # (K,)
-            match_loss += F.softplus(
-                (1 - 2 * f_n_prob) * YH1.mul(YH2[max_indices_12]).sum(dim=-1) -
-                YH1.mul(YH2[min_indices_12]).sum(dim=-1)
-            ).mean(dim=0)
-            del D12
-            D21 = torch.cdist(P1[min_indices_2], Y1)   # (K, K)
-            min_indices_21 = torch.argmin(D21, dim=1)  # (K,)
-            max_indices_21 = torch.argmax(D21, dim=1)  # (K,)
-            match_loss += F.softplus(
-                (1 - 2 * f_n_prob) * YH2.mul(YH1[max_indices_21]).sum(dim=-1) -
-                YH2.mul(YH1[min_indices_21]).sum(dim=-1)
-            ).mean(dim=0)
-            del D21
-            torch.cuda.empty_cache()
+            D_abag = torch.cdist(ori_X[ab_idx], ori_X[ag_idx])  # (N, M)
+            ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
+            ab_irr_scope, ag_irr_scope = torch.where(D_abag >= threshold)
+            match_loss += F.smooth_l1_loss(
+                F.softplus(H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
+                torch.zeros_like(ab_irr_scope)
+            )
+            match_loss += F.smooth_l1_loss(
+                F.softplus(H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
+                torch.ones_like(ab_dock_scope) * 1.5
+            )
             match_loss /= 2
-            # compute surface intersection loss and rmsd loss
+            # compute balance loss
+            # force from antigen(ligand) to antibody(receptor)
+            force_g2b = ori_X[ag_idx] - ori_X[ab_idx].unsqueeze(1).repeat(1, H2.shape[0], 1)    # (N, M, 3)
+            force_g2b = force_g2b * D_abag[:, :, None].pow(-3) * torch.matmul(
+                H1.unsqueeze(1).repeat(1, H2.shape[0], 1)[:, :, None, :],
+                H2[:, :, None]
+            ).squeeze(-1)   # (N, M, 3)
+            force_g2b = force_g2b.sum(dim=1)    # (N, 3)
+            radial_c2s = ori_X[ab_idx] - ori_X[ab_idx].mean(dim=0)  # (N, 3)
+            # angular momentum
+            ang_mo = torch.cross(radial_c2s, force_g2b) # (N, 3)
+            balance_loss += F.smooth_l1_loss(ang_mo.mean(dim=0), torch.zeros(3).to(device))
+            balance_loss += F.smooth_l1_loss(force_g2b.mean(dim=0), torch.zeros(3).to(device))
+            balance_loss /= 2
+            del D_abag  # free memory
+            torch.cuda.empty_cache()
+            # compute rmsd loss
             X1_aligned = init_X[ab_idx] @ R + t   # (N, 3)
             rmsd_loss += F.mse_loss(X1_aligned, ori_X[ab_idx])
-            # si_loss += protein_surface_intersection(init_X[ag_idx], X1_aligned).clip(min=0).mean(dim=0)
-            # si_loss += protein_surface_intersection(X1_aligned, init_X[ag_idx]).clip(min=0).mean(dim=0)
 
         # normalize
         ot_loss /= len(rot)
         dock_loss /= len(rot)
         stable_loss /= len(rot)
         match_loss /= len(rot)
+        balance_loss /= len(rot)
         rmsd_loss /= len(rot)
-        # si_loss /= len(rot)
+
+        bind_loss = ot_loss * dock_loss
 
         # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
         #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
-        loss = 2 * ot_loss + dock_loss + stable_loss + match_loss
-        return loss, (ot_loss, dock_loss, stable_loss, match_loss, rmsd_loss)
+        # loss = 2 * ot_loss + dock_loss + stable_loss + match_loss
+        loss = 2 * bind_loss + stable_loss + match_loss + balance_loss
+        return loss, (ot_loss, dock_loss, bind_loss, stable_loss, match_loss, balance_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
         device = X.device
@@ -188,12 +193,6 @@ class ExpDock(nn.Module):
         X = self.normalizer.centering(X, center, bid)
         # normalize X to approximately normal distribution
         X = self.normalizer.normalize(X).float()
-
-        # rotate and translate for antibodies, X' = XR + t
-        # rot, trans = sample_transformation(bid)
-        # for i in range(len(rot)):
-        #     ab_idx = torch.logical_and(Seg == 0, bid == i)
-        #     X[ab_idx] = X[ab_idx] @ rot[i] + trans[i]
 
         node_attr, edges, edge_attr = self.graph_constructor(
             X, S, RP, ID, Seg, bid
