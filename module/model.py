@@ -107,18 +107,18 @@ class ExpDock(nn.Module):
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)    # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
             for k in range(self.n_keypoints):
-                alpha_1k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
-                    torch.mm(H1, self._parameters[f'w1_mat_{k}']),
+                alpha_1k = (1. / np.sqrt(self.hidden_size)) * torch.matmul(
+                    (H1 @ self._parameters[f'w1_mat_{k}']),
                     H2.T.mean(dim=-1).unsqueeze(1)
                 ).squeeze() # (N,)
                 alpha_1k = F.softmax(alpha_1k, dim=0).unsqueeze(1)  # (N, 1)
-                Y1[k] = torch.mm(alpha_1k.T, X1).squeeze()
-                alpha_2k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
-                    torch.mm(H2, self._parameters[f'w2_mat_{k}']),
+                Y1[k] = (alpha_1k.T @ X1).squeeze()
+                alpha_2k = (1. / np.sqrt(self.hidden_size)) * torch.matmul(
+                    (H2 @ self._parameters[f'w2_mat_{k}']),
                     H1.T.mean(dim=-1).unsqueeze(1)
-                ).squeeze()  # (N,)
-                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
-                Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
+                ).squeeze()  # (M,)
+                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (M, 1)
+                Y2[k] = (alpha_2k.T @ X2).squeeze()
             P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
             D1 = torch.cdist(Y1, P1)    # (K, S)
             min_indices_1 = torch.argmin(D1, dim=1)     # (K,)
@@ -143,8 +143,8 @@ class ExpDock(nn.Module):
             ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
             ab_irr_scope, ag_irr_scope = torch.where(D_abag >= threshold)
             match_loss += F.smooth_l1_loss(
-                (H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
-                torch.ones_like(ab_irr_scope) * -1
+                F.softplus(H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
+                torch.zeros_like(ab_irr_scope)
             )
             match_loss += F.smooth_l1_loss(
                 (H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
