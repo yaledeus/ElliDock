@@ -143,12 +143,12 @@ class ExpDock(nn.Module):
             ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
             ab_irr_scope, ag_irr_scope = torch.where(D_abag >= threshold)
             match_loss += F.smooth_l1_loss(
-                F.softplus(H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
-                torch.zeros_like(ab_irr_scope)
+                (H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
+                torch.ones_like(ab_irr_scope) * -1
             )
             match_loss += F.smooth_l1_loss(
-                F.softplus(H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
-                torch.ones_like(ab_dock_scope) * 1.5
+                (H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
+                torch.ones_like(ab_dock_scope)
             )
             match_loss /= 2
             # compute balance loss
