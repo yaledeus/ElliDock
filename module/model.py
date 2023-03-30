@@ -107,18 +107,16 @@ class ExpDock(nn.Module):
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)    # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
             for k in range(self.n_keypoints):
-                alpha_1k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
-                    torch.mm(H1, self._parameters[f'w1_mat_{k}']),
-                    H2.T.mean(dim=-1).unsqueeze(1)
-                ).squeeze() # (N,)
+                alpha_1k = (1. / np.sqrt(self.hidden_size)) * (
+                    H1 @ self._parameters[f'w1_mat_{k}'] @ H2.T
+                ).mean(dim=1).squeeze() # (N,)
                 alpha_1k = F.softmax(alpha_1k, dim=0).unsqueeze(1)  # (N, 1)
-                Y1[k] = torch.mm(alpha_1k.T, X1).squeeze()
-                alpha_2k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
-                    torch.mm(H2, self._parameters[f'w2_mat_{k}']),
-                    H1.T.mean(dim=-1).unsqueeze(1)
-                ).squeeze()  # (N,)
+                Y1[k] = (alpha_1k.T @ X1).squeeze()
+                alpha_2k = (1. / np.sqrt(self.hidden_size)) * (
+                    H2 @ self._parameters[f'w2_mat_{k}'] @ H1.T
+                ).mean(dim=1).squeeze()  # (N,)
                 alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
-                Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
+                Y2[k] = (alpha_2k.T @ X2).squeeze()
             P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
             D1 = torch.cdist(Y1, P1)    # (K, S)
             min_indices_1 = torch.argmin(D1, dim=1)     # (K,)
@@ -129,7 +127,6 @@ class ExpDock(nn.Module):
             ot_loss += F.mse_loss(Y2, P2[min_indices_2])
             del D2  # free memory
             torch.cuda.empty_cache()
-            ot_loss /= 2
             # compute dock loss
             _, R, t = kabsch_torch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
             dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
@@ -137,7 +134,6 @@ class ExpDock(nn.Module):
             # compute stable loss
             stable_loss += F.softplus(-max_triangle_area(Y1))
             stable_loss += F.softplus(-max_triangle_area(Y2))
-            stable_loss /= 2
             # compute match loss
             D_abag = torch.cdist(ori_X[ab_idx], ori_X[ag_idx])  # (N, M)
             ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
@@ -150,33 +146,36 @@ class ExpDock(nn.Module):
                 (H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
                 torch.ones_like(ab_dock_scope)
             )
-            match_loss /= 2
-            # compute balance loss
-            # force from antigen(ligand) to antibody(receptor)
-            force_g2b = ori_X[ag_idx] - ori_X[ab_idx].unsqueeze(1).repeat(1, H2.shape[0], 1)    # (N, M, 3)
-            force_g2b = force_g2b * D_abag[:, :, None].pow(-3) * torch.matmul(
-                H1.unsqueeze(1).repeat(1, H2.shape[0], 1)[:, :, None, :],
-                H2[:, :, None]
-            ).squeeze(-1)   # (N, M, 3)
-            force_g2b = force_g2b.sum(dim=1)    # (N, 3)
-            radial_c2s = ori_X[ab_idx] - ori_X[ab_idx].mean(dim=0)  # (N, 3)
-            # angular momentum
-            ang_mo = torch.cross(radial_c2s, force_g2b) # (N, 3)
-            balance_loss += F.smooth_l1_loss(ang_mo.mean(dim=0), torch.zeros(3).to(device))
-            balance_loss += F.smooth_l1_loss(force_g2b.mean(dim=0), torch.zeros(3).to(device))
-            balance_loss /= 2
-            del D_abag  # free memory
-            torch.cuda.empty_cache()
             # compute rmsd loss
             X1_aligned = init_X[ab_idx] @ R + t   # (N, 3)
             rmsd_loss += F.mse_loss(X1_aligned, ori_X[ab_idx])
+            # compute balance loss
+            prod_H = (H1 @ H2.T).unsqueeze(-1)
+            # force from antigen(ligand) to antibody(receptor)
+            gt_force_g2b = ori_X[ag_idx] - ori_X[ab_idx].unsqueeze(1).repeat(1, H2.shape[0], 1)  # (N, M, 3)
+            gt_force_g2b = gt_force_g2b * D_abag[:, :, None].pow(-3) * prod_H
+            gt_force_g2b = gt_force_g2b.sum(dim=1)  # (N, 3)
+            gt_radial_c2s = ori_X[ab_idx] - ori_X[ab_idx].mean(dim=0)  # (N, 3)
+            # angular momentum
+            gt_ang_mo = torch.cross(gt_radial_c2s, gt_force_g2b)  # (N, 3)
+            balance_loss += F.smooth_l1_loss(gt_ang_mo.mean(dim=0), torch.zeros(3).to(device))
+            balance_loss += F.smooth_l1_loss(gt_force_g2b.mean(dim=0), torch.zeros(3).to(device))
+            del D_abag  # free memory
+            torch.cuda.empty_cache()
+            # pred_force_g2b = init_X[ag_idx] - X1_aligned.unsqueeze(1).repeat(1, H2.shape[0], 1) # (N, M, 3)
+            # pred_force_g2b = pred_force_g2b * torch.norm(pred_force_g2b, dim=-1, keepdim=True).pow(-3) * prod_H
+            # pred_force_g2b = pred_force_g2b.sum(dim=1)  # (N, 3)
+            # pred_radial_c2s = X1_aligned - X1_aligned.mean(dim=0)   # (N, 3)
+            # # pred angular momentum
+            # pred_ang_mo = torch.cross(pred_radial_c2s, pred_force_g2b)  # (N, 3)
+            # balance_loss += F.smooth_l1_loss(pred_ang_mo.mean(dim=0), torch.zeros(3).to(device))
 
         # normalize
-        ot_loss /= len(rot)
+        ot_loss /= (2 * len(rot))
         dock_loss /= len(rot)
-        stable_loss /= len(rot)
-        match_loss /= len(rot)
-        balance_loss /= len(rot)
+        stable_loss /= (2 * len(rot))
+        match_loss /= (2 * len(rot))
+        balance_loss /= (2 * len(rot))
         rmsd_loss /= len(rot)
 
         bind_loss = ot_loss * dock_loss
@@ -184,7 +183,7 @@ class ExpDock(nn.Module):
         # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
         #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
         # loss = 2 * ot_loss + dock_loss + stable_loss + match_loss
-        loss = 2 * bind_loss + stable_loss + match_loss + balance_loss
+        loss = bind_loss + stable_loss + match_loss + balance_loss
         return loss, (ot_loss, dock_loss, bind_loss, stable_loss, match_loss, balance_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
