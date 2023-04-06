@@ -13,6 +13,7 @@ from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch_torch, \
 from .embed import ComplexGraph
 from .gnn import PTA_EGNN, coord2nforce
 from .find_triangular import find_triangular_cython
+from utils.logger import print_log
 
 
 class ExpDock(nn.Module):
@@ -51,10 +52,10 @@ class ExpDock(nn.Module):
         # normalize X to approximately normal distribution
         X = self.normalizer.normalize(X).float()
         # clone original X, no grad
-        ori_X = X[:, CA_INDEX].clone().detach_()
+        ori_X = X[:, CA_INDEX].clone().detach()
         # note that normalizing shall not change the distance between nodes
         keypoints = self.normalizer.centering(keypoints, center, k_bid)
-        keypoints = self.normalizer.normalize(keypoints).float().detach_()
+        keypoints = self.normalizer.normalize(keypoints).float().detach()
         trans_keypoints = keypoints.clone()
 
         # rotate and translate for antibodies, X' = XR + t
@@ -62,13 +63,12 @@ class ExpDock(nn.Module):
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             X[ab_idx] = X[ab_idx] @ rot[i] + trans[i]
-            trans_keypoints[k_bid == i] = torch.mm(trans_keypoints[k_bid == i], rot[i]) + trans[i]
+            trans_keypoints[k_bid == i] = trans_keypoints[k_bid == i] @ rot[i] + trans[i]
 
         node_attr, edges, edge_attr = self.graph_constructor(
             X, S, RP, ID, Seg, bid
         )
 
-        row, col = edges
         klist = find_triangular_cython(edges.cpu().numpy())
         klist = torch.from_numpy(klist).to(device)
 
@@ -114,8 +114,8 @@ class ExpDock(nn.Module):
                 Y1[k] = (alpha_1k.T @ X1).squeeze()
                 alpha_2k = (1. / np.sqrt(self.hidden_size)) * (
                     H2 @ self._parameters[f'w2_mat_{k}'] @ H1.T
-                ).mean(dim=1).squeeze()  # (N,)
-                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
+                ).mean(dim=1).squeeze()  # (M,)
+                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (M, 1)
                 Y2[k] = (alpha_2k.T @ X2).squeeze()
             P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
             D1 = torch.cdist(Y1, P1)    # (K, S)
@@ -138,9 +138,11 @@ class ExpDock(nn.Module):
             D_abag = torch.cdist(ori_X[ab_idx], ori_X[ag_idx])  # (N, M)
             ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
             ab_irr_scope, ag_irr_scope = torch.where(D_abag >= threshold)
+            # NH1 = H1 / torch.norm(H1, dim=-1, keepdim=True)
+            # NH2 = H2 / torch.norm(H2, dim=-1, keepdim=True)
             match_loss += F.smooth_l1_loss(
-                F.softplus(H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
-                torch.zeros_like(ab_irr_scope)
+                (H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
+                torch.ones_like(ab_irr_scope) * -1
             )
             match_loss += F.smooth_l1_loss(
                 (H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
@@ -180,9 +182,8 @@ class ExpDock(nn.Module):
 
         bind_loss = ot_loss * dock_loss
 
-        # print_log(f"fb_loss: {fb_loss}, ot_loss: {ot_loss}, dock_loss: {dock_loss}, "
-        #           f"match_loss: {match_loss}, si_loss: {si_loss}", level='INFO')
-        # loss = 2 * ot_loss + dock_loss + stable_loss + match_loss
+        # print_log(f"ot_loss: {ot_loss}, dock_loss: {dock_loss}, stable_loss: {stable_loss}"
+        #           f"match_loss: {match_loss}, balance_loss: {balance_loss}", level='INFO')
         loss = bind_loss + stable_loss + match_loss + balance_loss
         return loss, (ot_loss, dock_loss, bind_loss, stable_loss, match_loss, balance_loss, rmsd_loss)
 
@@ -222,18 +223,16 @@ class ExpDock(nn.Module):
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)  # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
             for k in range(self.n_keypoints):
-                alpha_1k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
-                    torch.mm(H1, self._parameters[f'w1_mat_{k}']),
-                    H2.T.mean(dim=-1).unsqueeze(1)
-                ).squeeze()  # (N,)
+                alpha_1k = (1. / np.sqrt(self.hidden_size)) * (
+                        H1 @ self._parameters[f'w1_mat_{k}'] @ H2.T
+                ).mean(dim=1).squeeze()  # (N,)
                 alpha_1k = F.softmax(alpha_1k, dim=0).unsqueeze(1)  # (N, 1)
-                Y1[k] = torch.mm(alpha_1k.T, X1).squeeze()
-                alpha_2k = (1. / np.sqrt(self.hidden_size)) * torch.mm(
-                    torch.mm(H2, self._parameters[f'w2_mat_{k}']),
-                    H1.T.mean(dim=-1).unsqueeze(1)
-                ).squeeze()  # (N,)
-                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (N, 1)
-                Y2[k] = torch.mm(alpha_2k.T, X2).squeeze()
+                Y1[k] = (alpha_1k.T @ X1).squeeze()
+                alpha_2k = (1. / np.sqrt(self.hidden_size)) * (
+                        H2 @ self._parameters[f'w2_mat_{k}'] @ H1.T
+                ).mean(dim=1).squeeze()  # (M,)
+                alpha_2k = F.softmax(alpha_2k, dim=0).unsqueeze(1)  # (M, 1)
+                Y2[k] = (alpha_2k.T @ X2).squeeze()
             _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
             init_X[ab_idx] = init_X[ab_idx] @ R + t
 

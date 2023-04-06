@@ -4,6 +4,7 @@ import numpy as np
 from torch import nn
 import torch.nn.functional as F
 import torch
+from torch_scatter import scatter_softmax
 from typing import List
 
 
@@ -228,6 +229,60 @@ class Tri_Att_GCL(nn.Module):
         return output
 
 
+### Transformer gcl
+class Transformer_GCL(nn.Module):
+    def __init__(self, input_nf, output_nf, hidden_nf, att_heads, dropout=0.1):
+        super(Transformer_GCL, self).__init__()
+        self.hidden_nf = hidden_nf
+        self.att_heads = att_heads
+
+        self.dropout = nn.Dropout(dropout)
+
+        for h in range(self.att_heads):
+            self.add_module(f'linear_q{h}', nn.Linear(input_nf, hidden_nf, bias=False))
+            self.add_module(f'linear_k{h}', nn.Linear(input_nf, hidden_nf, bias=False))
+            self.add_module(f'linear_v{h}', nn.Linear(input_nf, hidden_nf, bias=False))
+            self.add_module(f'mlp_g{h}', nn.Sequential(
+                nn.Linear(input_nf, hidden_nf),
+                nn.Sigmoid()
+            ))
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_q{h}'].weight)
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_k{h}'].weight)
+            torch.nn.init.xavier_uniform_(self._modules[f'linear_v{h}'].weight)
+
+        self.linear_out = nn.Sequential(
+            nn.Linear(input_nf, hidden_nf),
+            nn.GELU(),
+            nn.Linear(hidden_nf, output_nf)
+        )
+
+
+    def forward(self, Z, edges):
+        """
+        :param Z: (n_edges, input_nf)
+        :param edges: (2, n_edges)
+        :return:
+        """
+        row, col = edges
+        z_update = torch.zeros_like(Z)
+
+        for h in range(self.att_heads):
+            q = self._modules[f'linear_q{h}'](Z)    # (n_edges, hidden_nf)
+            k = self._modules[f'linear_k{h}'](Z)    # (n_edges, hidden_nf)
+            v = self._modules[f'linear_v{h}'](Z)    # (n_edges, hidden_nf)
+            g = self._modules[f'mlp_g{h}'](Z)       # (n_edges, hidden_nf)
+
+            Att = 1. / np.sqrt(self.hidden_nf) * (q[:, None, :] @ k[:, :, None]).squeeze()  # (n_edges)
+            Att = scatter_softmax(Att, row).unsqueeze(1)     # (n_edges, 1)
+            z_update += Att * v * g                 # (n_edges, hidden_nf)
+
+        output = Z + z_update   # residual, (n_edges, output_nf)
+        output = output + self.linear_out(output)
+        output = self.dropout(output)
+
+        return output
+
+
 ### Pairwise energy && Triangular self-Attention EGNN
 class PTA_EGNN(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d,
@@ -274,17 +329,17 @@ class PTA_EGNN(nn.Module):
         m = self.tri_att_gcl(z, klist)
 
         # update coordinates
-        ita = .2    # weight
+        ita = .2    # weight for initial coordinate
         row, col = edges
         x_trans = coord_diff * torch.mul(self.phi_u(chem), self.phi_x(pos))
         x_agg = unsorted_segment_mean(x_trans, row, num_segments=coord.shape[0])    # (N, 3)
         coord = ita * init_coord + (1 - ita) * coord + x_agg
 
         # update h
-        beta = .2   # weight
         m_agg = unsorted_segment_mean(m, row, num_segments=coord.shape[0])  # (N, hidden_nf)
         m_all = torch.cat([h, node_attr, m_agg], dim=-1)
-        h = beta * h + (1 - beta) * self.phi_h(m_all)
+        # residual
+        h = h + self.phi_h(m_all)
 
         return h, coord
 
