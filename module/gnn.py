@@ -336,10 +336,11 @@ class PTA_EGNN(nn.Module):
         coord = ita * init_coord + (1 - ita) * coord + x_agg
 
         # update h
+        beta = .2   # weight for last stage H
         m_agg = unsorted_segment_mean(m, row, num_segments=coord.shape[0])  # (N, hidden_nf)
         m_all = torch.cat([h, node_attr, m_agg], dim=-1)
         # residual
-        h = h + self.phi_h(m_all)
+        h = beta * h + (1 - beta) * self.phi_h(m_all)
 
         return h, coord
 
