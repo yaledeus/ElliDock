@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from data import SabDabDataset, DBDataset, DIPSDataset
-from data.bio_parse import CA_INDEX
+from data.bio_parse import CA_INDEX, gen_docked_pdb
 from module.model import sample_transformation
 from evaluate import compute_crmsd, compute_irmsd
 
@@ -37,6 +37,10 @@ def main(args):
 
     expansion = 15
 
+    # generate docked receptor pdb file (only for DB5.5 recently)
+    if args.dataset == 'DB5.5':
+        pdb_base_path = os.path.join(os.path.dirname(args.test_set), 'structures')
+
     test_set = Dataset(args.test_set)
     test_loader = DataLoader(test_set, batch_size=args.batch_size,
                              num_workers=args.num_workers,
@@ -56,6 +60,7 @@ def main(args):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
+    batch_iter = 0
     crmsds, irmsds = [], []
 
     for batch in tqdm(test_loader):
@@ -73,7 +78,7 @@ def main(args):
                 ab_idx = torch.logical_and(batch['Seg'] == 0, batch['bid'] == i)
                 batch['X'][ab_idx] = batch['X'][ab_idx] @ rot[i] + trans[i] * expansion
             # docking
-            dock_X = model.dock(**batch)    # (N, 3)
+            dock_X, dock_trans_list = model.dock(**batch)    # (N, 3)
 
         bid = batch['bid'].cpu().numpy()
         Seg = batch['Seg'].cpu().numpy()
@@ -88,6 +93,19 @@ def main(args):
             irmsd = compute_irmsd(x, gt_x, seg)
             crmsds.append(crmsd)
             irmsds.append(irmsd)
+            # DB5.5 only
+            if args.dataset == 'DB5.5':
+                pdb_name = test_set.data[batch_iter * args.batch_size + i].pdb_name
+                # print(f'[+] generating docked receptor pdb file: {pdb_name}')
+                receptor_pdb_path = os.path.join(pdb_base_path, f'{pdb_name.upper()}_r_b.pdb')
+                def full_trans_func(X):
+                    if isinstance(X, np.ndarray):
+                        X = torch.from_numpy(X).reshape(-1, 3).to(device).float()
+                    X = X @ rot[i] + trans[i] * expansion
+                    return dock_trans_list[i](X)
+                gen_docked_pdb(pdb_name, receptor_pdb_path, save_dir, full_trans_func)
+
+        batch_iter += 1
 
     for name, val in zip(['CRMSD', 'IRMSD'], [crmsds, irmsds]):
         print(f'{name} median: {np.median(val)}', end=' ')

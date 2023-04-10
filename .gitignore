@@ -14,3 +14,4 @@ __pycache__
 *.dill
 
 **benchmark5.5/
+**dock_example_db5.5/

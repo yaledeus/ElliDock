@@ -215,6 +215,8 @@ class ExpDock(nn.Module):
                 H, X, edges, nvecs, edge_attr, node_attr, init_X, klist
             )
 
+        dock_trans_list = []
+
         for i in range(bid[-1] + 1):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             ag_idx = torch.logical_and(Seg == 1, bid == i)
@@ -235,11 +237,12 @@ class ExpDock(nn.Module):
                 Y2[k] = (alpha_2k.T @ X2).squeeze()
             _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
             init_X[ab_idx] = init_X[ab_idx] @ R + t
+            dock_trans_list.append(self.normalizer.dock_transformation(center, i, R, t))
 
         init_X = self.normalizer.unnormalize(init_X)
         init_X = self.normalizer.uncentering(init_X, center, bid)
 
-        return init_X
+        return init_X, dock_trans_list
 
 
 def rotation_loss(pred_R, gt_R):

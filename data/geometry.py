@@ -330,3 +330,16 @@ class CoordNomralizer(nn.Module):
     def unnormalize(self, X):
         X = X * self.std + self.mean
         return X
+
+    def dock_transformation(self, center, bid, R, t):
+        def tran_func(X):
+            device = center.device
+            if isinstance(X, np.ndarray):
+                X = torch.from_numpy(X).reshape(-1, 3).to(device).float()
+            X = self.centering(X, center, bid)
+            X = self.normalize(X).float()
+            X = X @ R + t
+            X = self.unnormalize(X)
+            X = self.uncentering(X, center, bid)
+            return X.squeeze().cpu().numpy()
+        return tran_func

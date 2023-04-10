@@ -20,7 +20,7 @@ if [ $MODEL = "ExpDock" ]; then
   SAVE_DIR=${DATA_DIR}/ckpt
 fi
 
-BATCH_SIZE=16
+BATCH_SIZE=4
 DATASET=SabDab
 
 ######### end of adjust ##########
@@ -67,14 +67,14 @@ ${PREFIX} train.py \
     --valid_set $VALID_SET \
     --save_dir $SAVE_DIR \
     --model_type $MODEL \
-    --lr 8e-5 \
+    --lr 1e-4 \
     --max_epoch 500 \
     --patience 10 \
     --save_topk 10 \
     --embed_dim 64 \
-    --hidden_size 128 \
+    --hidden_size 72 \
     --k_neighbors 10 \
-    --n_layers 4 \
+    --n_layers 3 \
     --n_keypoints 10 \
     --att_heads 1 \
     --shuffle \

@@ -1,4 +1,5 @@
 from Bio.PDB import PDBParser
+from Bio.PDB.PDBIO import PDBIO
 from Bio.PDB.Polypeptide import standard_aa_names as AA_NAMES_3
 from Bio.Data import IUPACData
 from typing import List
@@ -244,6 +245,20 @@ def DIPS_pdb_parse(dill_path):
     return re_seq, li_seq, re_coord, li_coord
 
 
+### generate docked pdb file
+def gen_docked_pdb(pdb_name, src_path, dst_path, trans_func):
+    structure = parser.get_structure(pdb_name, src_path)
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                for atom in residue:
+                    atom_coord = atom.get_coord()
+                    atom.set_coord(trans_func(atom_coord))
+    io = PDBIO()
+    io.set_structure(structure)
+    io.save(os.path.join(dst_path, f'{pdb_name}_r_d.pdb'))
+
+
 class SabDabComplex:
     def __init__(self, ab_seq, cdr_pos, ag_seq, ab_coord, ag_coord):
         self.ab_seq = ab_seq
@@ -356,7 +371,8 @@ class SabDabComplex:
 
 
 class DBComplex:
-    def __init__(self, ligand_seq, receptor_seq, ligand_coord, receptor_coord):
+    def __init__(self, pdb_name, ligand_seq, receptor_seq, ligand_coord, receptor_coord):
+        self.pdb_name = pdb_name
         self.li_seq = ligand_seq
         self.re_seq = receptor_seq
         self.li_coord = ligand_coord
@@ -368,7 +384,7 @@ class DBComplex:
         receptor_bound_path = os.path.join(base_path, f'{pdb_name.upper()}_r_b.pdb')
         ligand_seq, ligand_coord = DB_pdb_parse(ligand_bound_path)
         receptor_seq, receptor_coord = DB_pdb_parse(receptor_bound_path)
-        return cls(ligand_seq, receptor_seq, ligand_coord, receptor_coord)
+        return cls(pdb_name.upper(), ligand_seq, receptor_seq, ligand_coord, receptor_coord)
 
     def ligand_seq(self) -> List:
         ligand_seq = []
