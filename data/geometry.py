@@ -300,6 +300,27 @@ print(f"maximum area of point cloud B should be 0.5: {max_triangle_area(B)}")
 """
 
 
+def recon_orthogonal_matrix(Q, v):
+    """
+    :param Q: orthogonal matrix, (3, 3)
+    :param v: a new basis, (3,)
+    :return: a new orthogonal matrix Q' containing norm(v)
+    """
+    assert Q.shape == (3, 3) and v.shape == (3,)
+    v = v / torch.norm(v)
+    new_Q = Q.clone()
+    new_Q[:, -1] = v
+    assert torch.linalg.det(new_Q) > 1e-3  # ensure the new orthogonal matrix is not singular
+
+    # Gram-Schmidt orthogonal method
+    new_Q[:, 0] = new_Q[:, 0] - torch.dot(v, new_Q[:, 0]) * v
+    new_Q[:, 0] = new_Q[:, 0] / torch.norm(new_Q[:, 0])
+    new_Q[:, 1] = new_Q[:, 1] - torch.dot(v, new_Q[:, 1]) * v - torch.dot(new_Q[:, 0], new_Q[:, 1]) * new_Q[:, 0]
+    new_Q[:, 1] = new_Q[:, 1] / torch.norm(new_Q[:, 1])
+
+    return new_Q
+
+
 class CoordNomralizer(nn.Module):
     def __init__(self, mean=None, std=None) -> None:
         super().__init__()
