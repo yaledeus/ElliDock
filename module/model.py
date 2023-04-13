@@ -8,8 +8,7 @@ import torch
 import sys
 sys.path.append('..')
 from data.bio_parse import CA_INDEX
-from data.geometry import CoordNomralizer, rand_rotation_matrix, kabsch_torch, \
-    max_triangle_area
+from data.geometry import *
 from .embed import ComplexGraph
 from .gnn import PTA_EGNN, coord2nforce
 from .find_triangular import find_triangular_cython
@@ -89,20 +88,22 @@ class ExpDock(nn.Module):
             )
 
         # optimal transport loss & keypoint loss & dock loss & rmsd loss &
-        # stable loss & match loss
+        # stable loss & match loss & balance loss
+        balance_loss = 0.
         ot_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
         stable_loss = 0.
         match_loss = 0.
-        balance_loss = 0.
         # threshold
         threshold = 10. / torch.mean(self.normalizer.std)
 
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             ag_idx = torch.logical_and(Seg == 1, bid == i)
-            H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
+            init_H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
+            H1 = constrain_refine_hidden_space(init_H1, H2, ori_X[ab_idx], ori_X[ag_idx])
+            balance_loss += F.smooth_l1_loss(init_H1, H1)
             X1, X2 = X[ab_idx], X[ag_idx]   # X1: (N, 3) X2: (M, 3)
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)    # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
@@ -151,33 +152,13 @@ class ExpDock(nn.Module):
             # compute rmsd loss
             X1_aligned = init_X[ab_idx] @ R + t   # (N, 3)
             rmsd_loss += F.mse_loss(X1_aligned, ori_X[ab_idx])
-            # compute balance loss
-            prod_H = (H1 @ H2.T).unsqueeze(-1)
-            # force from antigen(ligand) to antibody(receptor)
-            gt_force_g2b = ori_X[ag_idx] - ori_X[ab_idx].unsqueeze(1).repeat(1, H2.shape[0], 1)  # (N, M, 3)
-            gt_force_g2b = gt_force_g2b * D_abag[:, :, None].pow(-3) * prod_H
-            gt_force_g2b = gt_force_g2b.sum(dim=1)  # (N, 3)
-            gt_radial_c2s = ori_X[ab_idx] - ori_X[ab_idx].mean(dim=0)  # (N, 3)
-            # angular momentum
-            gt_ang_mo = torch.cross(gt_radial_c2s, gt_force_g2b)  # (N, 3)
-            balance_loss += F.smooth_l1_loss(gt_ang_mo.mean(dim=0), torch.zeros(3).to(device))
-            balance_loss += F.smooth_l1_loss(gt_force_g2b.mean(dim=0), torch.zeros(3).to(device))
-            del D_abag  # free memory
-            torch.cuda.empty_cache()
-            # pred_force_g2b = init_X[ag_idx] - X1_aligned.unsqueeze(1).repeat(1, H2.shape[0], 1) # (N, M, 3)
-            # pred_force_g2b = pred_force_g2b * torch.norm(pred_force_g2b, dim=-1, keepdim=True).pow(-3) * prod_H
-            # pred_force_g2b = pred_force_g2b.sum(dim=1)  # (N, 3)
-            # pred_radial_c2s = X1_aligned - X1_aligned.mean(dim=0)   # (N, 3)
-            # # pred angular momentum
-            # pred_ang_mo = torch.cross(pred_radial_c2s, pred_force_g2b)  # (N, 3)
-            # balance_loss += F.smooth_l1_loss(pred_ang_mo.mean(dim=0), torch.zeros(3).to(device))
 
         # normalize
+        balance_loss /= len(rot)
         ot_loss /= (2 * len(rot))
         dock_loss /= len(rot)
         stable_loss /= (2 * len(rot))
         match_loss /= (2 * len(rot))
-        balance_loss /= (2 * len(rot))
         rmsd_loss /= len(rot)
 
         bind_loss = ot_loss * dock_loss
@@ -243,6 +224,58 @@ class ExpDock(nn.Module):
         init_X = self.normalizer.uncentering(init_X, center, bid)
 
         return init_X, dock_trans_list
+
+
+def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):
+    """
+    :param H_r: receptor hidden space, (N, K)
+    :param H_l: ligand hidden space, (M, K)
+    :param X_r: groundtruth receptor coordinate, (N, 3)
+    :param X_l: groundtruth ligand coordinate, (M, 3)
+    :return: refined_H_r, (N, K)
+    """
+    N = H_r.shape[0]
+    device = H_r.device
+    receptor_center = torch.mean(X_r, dim=0)    # (3,)
+    ligand_center = torch.mean(X_l, dim=0)      # (3,)
+    delta_X = ligand_center - X_r               # (N, 3)
+    H_l_mean = torch.mean(H_l, dim=0)           # (K,)
+    init_prod_H = (H_r @ H_l_mean).unsqueeze(1) # (N, 1)
+    A = torch.norm(delta_X).pow(-3) * delta_X   # (N, 3)
+    Force = init_prod_H * A                     # (N, 3)
+    # F_U: (N, 3), F_S: (3,), F_Vh: (3, 3)
+    F_U, F_S, F_Vh = torch.linalg.svd(Force, full_matrices=False)
+    refined_F_S = F_S.clone()
+    refined_F_S[-1] = 0. # set the last singular value equals to 0
+    refined_F_U = recon_orthogonal_matrix(F_U, torch.ones(N).to(device))
+    R2X = X_r - receptor_center     # (N, 3)
+    Ra = torch.vstack([
+        torch.hstack([torch.zeros(N).to(device), -R2X[:, 2].T, R2X[:, 1].T]),
+        torch.hstack([R2X[:, 2].T, torch.zeros(N).to(device), -R2X[:, 0].T]),
+        torch.hstack([-R2X[:, 1].T, R2X[:, 0].T, torch.zeros(N).to(device)])
+    ])  # (3, 3N)
+    T = torch.hstack([
+        Ra[:, :N] @ refined_F_U @ torch.diag(refined_F_S),
+        Ra[:, N:2*N] @ refined_F_U @ torch.diag(refined_F_S),
+        Ra[:, 2*N:] @ refined_F_U @ torch.diag(refined_F_S)
+    ])  # (3, 9)
+    # T_U: (3, 3), T_S: (3,), T_Vh: (3, 9)
+    T_U, T_S, T_Vh = torch.linalg.svd(T, full_matrices=False)
+    concat_vh = torch.hstack([F_Vh[:, 0], F_Vh[:, 1], F_Vh[:, 2]])   # (9,)
+    # project Vh to zero space of T
+    proj_vh = (torch.eye(9).to(device) - T_Vh.T @ T_Vh) @ concat_vh  # (9,)
+    refined_F_Vh = torch.vstack([proj_vh[:3], proj_vh[3:6], proj_vh[6:]])   # (3, 3)
+    refined_F_Vh = modified_gram_schmidt(refined_F_Vh)  # (3, 3)
+    S = refined_F_U @ torch.diag(refined_F_S) @ refined_F_Vh @ torch.linalg.pinv(A) # (N, N)
+    refined_prod_H = torch.sum(torch.mul(S @ A, A), dim=1) / torch.norm(A, dim=1).pow(2)    # (N,)
+    # Hr_U: (N, K), Hr_S: (K,), Hr_Vh: (K, K)
+    Hr_U, Hr_S, Hr_Vh = torch.linalg.svd(H_r, full_matrices=False)
+    refined_Hr_S = Hr_S.clone()
+    refined_Hr_S[-1] = 0    # set the last singular value equals to 0
+    refined_Hr_Vh = recon_orthogonal_matrix(Hr_Vh, H_l_mean)    # (K, K)
+    C = Hr_U @ torch.diag(refined_Hr_S) @ refined_Hr_Vh     # (N, K)
+    refined_H_r = refined_prod_H.unsqueeze(1) @ torch.linalg.pinv(H_l_mean.unsqueeze(1)) + C
+    return refined_H_r
 
 
 def rotation_loss(pred_R, gt_R):
