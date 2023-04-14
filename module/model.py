@@ -88,7 +88,7 @@ class ExpDock(nn.Module):
             )
 
         # optimal transport loss & keypoint loss & dock loss & rmsd loss &
-        # stable loss & match loss & balance loss
+        # stable loss & match loss
         balance_loss = 0.
         ot_loss = 0.
         dock_loss = 0.
@@ -101,9 +101,9 @@ class ExpDock(nn.Module):
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             ag_idx = torch.logical_and(Seg == 1, bid == i)
-            init_H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
-            H1 = constrain_refine_hidden_space(init_H1, H2, ori_X[ab_idx], ori_X[ag_idx])
-            balance_loss += F.smooth_l1_loss(init_H1, H1)
+            H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
+            refined_H1 = constrain_refine_hidden_space(H1, H2, ori_X[ab_idx], ori_X[ag_idx])
+            balance_loss = F.kl_div(F.log_softmax(H1, dim=1), F.softmax(refined_H1, dim=1), reduction="batchmean")
             X1, X2 = X[ab_idx], X[ag_idx]   # X1: (N, 3) X2: (M, 3)
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)    # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
@@ -139,15 +139,17 @@ class ExpDock(nn.Module):
             D_abag = torch.cdist(ori_X[ab_idx], ori_X[ag_idx])  # (N, M)
             ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
             ab_irr_scope, ag_irr_scope = torch.where(D_abag >= threshold)
-            # NH1 = H1 / torch.norm(H1, dim=-1, keepdim=True)
-            # NH2 = H2 / torch.norm(H2, dim=-1, keepdim=True)
             match_loss += F.smooth_l1_loss(
-                (H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
-                torch.ones_like(ab_irr_scope) * -1
+                # (H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
+                # torch.ones_like(ab_irr_scope) * -1
+                F.softplus(H1[ab_irr_scope][:, None, :] @ H2[ag_irr_scope][:, :, None]).squeeze(),
+                torch.zeros_like(ab_irr_scope)
             )
             match_loss += F.smooth_l1_loss(
-                (H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
-                torch.ones_like(ab_dock_scope)
+                # (H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
+                # torch.ones_like(ab_dock_scope)
+                F.softplus(-H1[ab_dock_scope][:, None, :] @ H2[ag_dock_scope][:, :, None]).squeeze(),
+                torch.zeros_like(ab_dock_scope)
             )
             # compute rmsd loss
             X1_aligned = init_X[ab_idx] @ R + t   # (N, 3)
@@ -155,10 +157,10 @@ class ExpDock(nn.Module):
 
         # normalize
         balance_loss /= len(rot)
-        ot_loss /= (2 * len(rot))
+        ot_loss /= len(rot)
         dock_loss /= len(rot)
-        stable_loss /= (2 * len(rot))
-        match_loss /= (2 * len(rot))
+        stable_loss /= len(rot)
+        match_loss /= len(rot)
         rmsd_loss /= len(rot)
 
         bind_loss = ot_loss * dock_loss
@@ -259,20 +261,24 @@ def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):
         Ra[:, N:2*N] @ refined_F_U @ torch.diag(refined_F_S),
         Ra[:, 2*N:] @ refined_F_U @ torch.diag(refined_F_S)
     ])  # (3, 9)
+    # refined_F_vh3 = -torch.linalg.pinv(T[:, 6:]) @ (T[:, :3] @ F_Vh[:, 0] + T[:, 3:6] @ F_Vh[:, 1])
+    # refined_F_Vh = torch.vstack([F_Vh[:, 0], F_Vh[:, 1], refined_F_vh3]).T   # (3, 3)
+    # refined_F_Vh = modified_gram_schmidt(refined_F_Vh)  # (3, 3)
     # T_U: (3, 3), T_S: (3,), T_Vh: (3, 9)
     T_U, T_S, T_Vh = torch.linalg.svd(T, full_matrices=False)
-    concat_vh = torch.hstack([F_Vh[:, 0], F_Vh[:, 1], F_Vh[:, 2]])   # (9,)
+    concat_vh = torch.hstack([F_Vh[:, 0], F_Vh[:, 1], F_Vh[:, 2]])  # (9,)
     # project Vh to zero space of T
     proj_vh = (torch.eye(9).to(device) - T_Vh.T @ T_Vh) @ concat_vh  # (9,)
-    refined_F_Vh = torch.vstack([proj_vh[:3], proj_vh[3:6], proj_vh[6:]])   # (3, 3)
+    refined_F_Vh = torch.vstack([proj_vh[:3], proj_vh[3:6], proj_vh[6:]]).T  # (3, 3)
     refined_F_Vh = modified_gram_schmidt(refined_F_Vh)  # (3, 3)
     S = refined_F_U @ torch.diag(refined_F_S) @ refined_F_Vh @ torch.linalg.pinv(A) # (N, N)
     refined_prod_H = torch.sum(torch.mul(S @ A, A), dim=1) / torch.norm(A, dim=1).pow(2)    # (N,)
-    # Hr_U: (N, K), Hr_S: (K,), Hr_Vh: (K, K)
+    # Hr_U: (N, K), Hr_S: (K,), Hr_Vh: (K, K) if N >= K
+    # Hr_U: (N, N), Hr_S: (N,), Hr_Vh: (N, K) if N < K
     Hr_U, Hr_S, Hr_Vh = torch.linalg.svd(H_r, full_matrices=False)
     refined_Hr_S = Hr_S.clone()
     refined_Hr_S[-1] = 0    # set the last singular value equals to 0
-    refined_Hr_Vh = recon_orthogonal_matrix(Hr_Vh, H_l_mean)    # (K, K)
+    refined_Hr_Vh = recon_orthogonal_matrix(Hr_Vh.T, H_l_mean).T
     C = Hr_U @ torch.diag(refined_Hr_S) @ refined_Hr_Vh     # (N, K)
     refined_H_r = refined_prod_H.unsqueeze(1) @ torch.linalg.pinv(H_l_mean.unsqueeze(1)) + C
     return refined_H_r
