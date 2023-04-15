@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
-from .bio_parse import N_INDEX, CA_INDEX, C_INDEX
+from bio_parse import N_INDEX, CA_INDEX, C_INDEX
 
 
 def dihedral_from_four_points(p0, p1, p2, p3):
@@ -326,6 +326,76 @@ def recon_orthogonal_matrix(Q, v):
     new_Q = torch.hstack([q[:, 1:], norm_v])
 
     return new_Q
+
+
+def orthogonal_null_space_vec(A, init_u=None):
+    """
+    :param A: row-orthogonal matrix, (3, 9)
+    :param init_u: initial vector, (9,), default: None
+    :return: v s.t. Av=0 and v[:3], v[3:6], v[6:] constitutes an orthogonal basis of R3 space
+    """
+    device = A.device
+    def target_derivative(A1, A2, A3, u1, u2, u3):
+        partial_target2u1 = 2 * (A1.T @ A1 @ u1 + A1.T @ A2 @ u2 + A1.T @ A3 @ u3)
+        partial_target2u2 = 2 * (A2.T @ A1 @ u1 + A2.T @ A2 @ u2 + A2.T @ A3 @ u3)
+        partial_target2u3 = 2 * (A3.T @ A1 @ u1 + A3.T @ A2 @ u2 + A3.T @ A3 @ u3)
+        return (partial_target2u1, partial_target2u2, partial_target2u3)
+
+    def punishment_derivative(u1, u2, u3):
+        partial_punish2u1 = 2 * ((torch.dot(u1, u1) - 1) * u1 + torch.dot(u1, u2) * u2 + torch.dot(u1, u3) * u3)
+        partial_punish2u2 = 2 * (torch.dot(u2, u1) * u1 + (torch.dot(u2, u2) - 1) * u2 + torch.dot(u2, u3) * u3)
+        partial_punish2u3 = 2 * (torch.dot(u3, u1) * u1 + torch.dot(u3, u2) * u2 + (torch.dot(u3, u3) - 1) * u3)
+        return (partial_punish2u1, partial_punish2u2, partial_punish2u3)
+
+    def derivative(A1, A2, A3, u1, u2, u3, rho=1.):
+        partial_target2u1, partial_target2u2, partial_target2u3 = target_derivative(A1, A2, A3, u1, u2, u3)
+        partial_punish2u1, partial_punish2u2, partial_punish2u3 = punishment_derivative(u1, u2, u3)
+        return (
+            partial_target2u1 + 0.5 * rho * partial_punish2u1,
+            partial_target2u2 + 0.5 * rho * partial_punish2u2,
+            partial_target2u3 + 0.5 * rho * partial_punish2u3
+            )
+
+
+    assert A.shape == (3, 9)
+    # A1, A2, A3: (3, 3) matrix, under most conditions invertible
+    A1 = A[:, :3]
+    A2 = A[:, 3:6]
+    A3 = A[:, 6:]
+    # u1, u2, u3: (3,) vector
+    if not init_u is None:
+        u1 = init_u[:3].clone()
+        u2 = init_u[3:6].clone()
+        u3 = init_u[6:].clone()
+    else:
+        u1 = torch.rand(3).to(device)
+        u2 = torch.rand(3).to(device)
+        u3 = torch.rand(3).to(device)
+
+    iteration = 50
+    lr = torch.linspace(1e-1, 1e-3, steps=iteration)
+    rho = 1.
+
+    for i in range(iteration):
+        deriv2u1, deriv2u2, deriv2u3 = derivative(A1, A2, A3, u1, u2, u3, rho)
+        u1 = u1 - lr[i] * deriv2u1
+        u2 = u2 - lr[i] * deriv2u2
+        u3 = u3 - lr[i] * deriv2u3
+
+    v = torch.hstack([u1, u2, u3])
+    return v
+"""
+# test orthogonal null space vec
+A = torch.rand(3, 9)
+v = orthogonal_null_space_vec(A)
+print(f"||Av||: {torch.norm(A @ v)}")
+print(f"||v1||: {torch.norm(v[:3])}")
+print(f"||v2||: {torch.norm(v[3:6])}")
+print(f"||v3||: {torch.norm(v[6:])}")
+print(f"v1 @ v2: {torch.dot(v[:3], v[3:6])}")
+print(f"v2 @ v3: {torch.dot(v[3:6], v[6:])}")
+print(f"v3 @ v1: {torch.dot(v[6:], v[:3])}")
+"""
 
 
 class CoordNomralizer(nn.Module):

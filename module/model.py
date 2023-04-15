@@ -261,16 +261,13 @@ def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):
         Ra[:, N:2*N] @ refined_F_U @ torch.diag(refined_F_S),
         Ra[:, 2*N:] @ refined_F_U @ torch.diag(refined_F_S)
     ])  # (3, 9)
-    # refined_F_vh3 = -torch.linalg.pinv(T[:, 6:]) @ (T[:, :3] @ F_Vh[:, 0] + T[:, 3:6] @ F_Vh[:, 1])
-    # refined_F_Vh = torch.vstack([F_Vh[:, 0], F_Vh[:, 1], refined_F_vh3]).T   # (3, 3)
-    # refined_F_Vh = modified_gram_schmidt(refined_F_Vh)  # (3, 3)
     # T_U: (3, 3), T_S: (3,), T_Vh: (3, 9)
     T_U, T_S, T_Vh = torch.linalg.svd(T, full_matrices=False)
     concat_vh = torch.hstack([F_Vh[:, 0], F_Vh[:, 1], F_Vh[:, 2]])  # (9,)
     # project Vh to zero space of T
     proj_vh = (torch.eye(9).to(device) - T_Vh.T @ T_Vh) @ concat_vh  # (9,)
     refined_F_Vh = torch.vstack([proj_vh[:3], proj_vh[3:6], proj_vh[6:]]).T  # (3, 3)
-    refined_F_Vh = modified_gram_schmidt(refined_F_Vh)  # (3, 3)
+    # refined_F_Vh = modified_gram_schmidt(refined_F_Vh)  # (3, 3)
     S = refined_F_U @ torch.diag(refined_F_S) @ refined_F_Vh @ torch.linalg.pinv(A) # (N, N)
     refined_prod_H = torch.sum(torch.mul(S @ A, A), dim=1) / torch.norm(A, dim=1).pow(2)    # (N,)
     # Hr_U: (N, K), Hr_S: (K,), Hr_Vh: (K, K) if N >= K
