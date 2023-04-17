@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from .bio_parse import SabDabComplex, DBComplex, DIPSComplex
+from .bio_parse import SabDabComplex, DBComplex, DIPSComplex, BaseComplex
 import sys
 sys.path.append('..')
 from utils.logger import print_log
@@ -171,7 +171,7 @@ class SabDabDataset(torch.utils.data.Dataset):
             center = np.mean(ag_bb_coord.reshape(-1, 3), axis=0)
 
             # keypoint pairs
-            keypoints = item.find_keypoint(threshold=10)
+            keypoints = item.find_keypoint(threshold=8.)
 
             assert ab_bb_coord.ndim == 3, f'invalid antibody coordinate dimension: {ab_bb_coord.ndim}'
             assert ag_bb_coord.ndim == 3, f'invalid antigen coordinate dimension: {ag_bb_coord.ndim}'
@@ -391,7 +391,7 @@ class DBDataset(torch.utils.data.Dataset):
             center = np.mean(ligand_bb_coord.reshape(-1, 3), axis=0)
 
             # keypoint pairs
-            keypoints = item.find_keypoint(threshold=10)
+            keypoints = item.find_keypoint(threshold=8.)
 
             assert receptor_bb_coord.ndim == 3, f'invalid receptor coordinate dimension: {receptor_bb_coord.ndim}'
             assert ligand_bb_coord.ndim == 3, f'invalid ligand coordinate dimension: {ligand_bb_coord.ndim}'
@@ -612,7 +612,7 @@ class DIPSDataset(torch.utils.data.Dataset):
             center = np.mean(ligand_bb_coord.reshape(-1, 3), axis=0)
 
             # keypoint pairs
-            keypoints = item.find_keypoint(threshold=10)
+            keypoints = item.find_keypoint(threshold=8.)
 
             assert receptor_bb_coord.ndim == 3, f'invalid receptor coordinate dimension: {receptor_bb_coord.ndim}'
             assert ligand_bb_coord.ndim == 3, f'invalid ligand coordinate dimension: {ligand_bb_coord.ndim}'
@@ -679,3 +679,49 @@ class DIPSDataset(torch.utils.data.Dataset):
         res['bid'] = torch.tensor(bid, dtype=torch.long)
         res['k_bid'] = torch.tensor(k_bid, dtype=torch.long)
         return res
+
+
+def test_complex_process(ligand_path, receptor_path):
+    complex = BaseComplex.from_pdb(ligand_path, receptor_path)
+    # receptor
+    receptor_seq = complex.receptor_seq()
+    receptor_bb_coord = complex.receptor_coord()  # backbone atoms, [N_re, 4, 3]
+    receptor_rp = complex.receptor_relative_pos()
+    receptor_id = complex.receptor_identity()
+
+    # ligand
+    ligand_seq = complex.ligand_seq()
+    ligand_bb_coord = complex.ligand_coord()  # backbone atoms, [N_li, 4, 3]
+    ligand_rp = complex.ligand_relative_pos()
+    ligand_id = complex.ligand_identity()
+
+    # center
+    center = np.mean(ligand_bb_coord.reshape(-1, 3), axis=0)
+
+    assert receptor_bb_coord.ndim == 3, f'invalid receptor coordinate dimension: {receptor_bb_coord.ndim}'
+    assert ligand_bb_coord.ndim == 3, f'invalid ligand coordinate dimension: {ligand_bb_coord.ndim}'
+    assert len(receptor_seq) == len(receptor_rp) and len(receptor_seq) == len(receptor_id) and len(receptor_seq) == \
+           receptor_bb_coord.shape[0], \
+        'receptor seq/coord/rp/id dimension mismatch'
+    assert len(ligand_seq) == len(ligand_rp) and len(ligand_seq) == len(ligand_id) and len(ligand_seq) == \
+           ligand_bb_coord.shape[0], \
+        'ligand seq/coord/rp/id dimension mismatch'
+    assert receptor_bb_coord.shape[1] == ligand_bb_coord.shape[1] and receptor_bb_coord.shape[2] == \
+           ligand_bb_coord.shape[2], \
+        'receptor and ligand coordinates mismatch'
+
+    data = {
+        'S': torch.tensor(np.array(receptor_seq + ligand_seq), dtype=torch.long),
+        'X': torch.tensor(np.concatenate((receptor_bb_coord, ligand_bb_coord), axis=0), dtype=torch.float),
+        'RP': torch.tensor(np.array(receptor_rp + ligand_rp), dtype=torch.long),
+        'ID': torch.tensor(np.array(receptor_id + ligand_id), dtype=torch.long),
+        ### segment, 0 for receptor and 1 for ligand
+        'Seg': torch.tensor(
+            np.array([0 for _ in range(len(receptor_seq))] + [1 for _ in range(len(ligand_seq))]),
+            dtype=torch.long
+        ),
+        'center': torch.tensor(center, dtype=torch.float).unsqueeze(0),
+        'bid': torch.tensor([0] * (len(receptor_seq) + len(ligand_seq)), dtype=torch.long),
+    }
+
+    return data

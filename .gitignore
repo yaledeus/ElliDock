@@ -10,7 +10,6 @@ __pycache__
 *.pkl
 *.svg
 *.log
-*.pdb
 *.dill
 
 **benchmark5.5/

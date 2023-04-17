@@ -170,7 +170,7 @@ class ExpDock(nn.Module):
         loss = bind_loss + stable_loss + match_loss + balance_loss
         return loss, (ot_loss, dock_loss, bind_loss, stable_loss, match_loss, balance_loss, rmsd_loss)
 
-    def dock(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
+    def dock(self, X, S, RP, ID, Seg, center, bid, **kwargs):
         device = X.device
         # center to antigen
         X = self.normalizer.centering(X, center, bid)
