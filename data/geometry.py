@@ -141,7 +141,7 @@ def kabsch_torch(P: torch.Tensor, Q: torch.Tensor):
     """
     :param P: (N, 3)
     :param Q: (N, 3)
-    :return: P @ R + t, R, t such that minimize RMSD(PR + t, B)
+    :return: P @ R + t, R, t such that minimize RMSD(PR + t, Q)
     """
     P = P.double()
     Q = Q.double()
@@ -422,11 +422,11 @@ class CoordNomralizer(nn.Module):
         return X
 
     def normalize(self, X):
-        X = (X - self.mean) / self.std
+        X = (X - self.mean) / torch.mean(self.std)
         return X
 
     def unnormalize(self, X):
-        X = X * self.std + self.mean
+        X = X * torch.mean(self.std) + self.mean
         return X
 
     def dock_transformation(self, center, bid, R, t):

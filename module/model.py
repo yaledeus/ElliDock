@@ -46,23 +46,28 @@ class ExpDock(nn.Module):
 
     def forward(self, X, S, RP, ID, Seg, center, keypoints, bid, k_bid):
         device = X.device
-        # center to antigen
+
+        # center to ligand and normalize
         X = self.normalizer.centering(X, center, bid)
-        # normalize X to approximately normal distribution
-        X = self.normalizer.normalize(X).float()
-        # clone original X, no grad
-        ori_X = X[:, CA_INDEX].clone().detach()
-        # note that normalizing shall not change the distance between nodes
         keypoints = self.normalizer.centering(keypoints, center, k_bid)
-        keypoints = self.normalizer.normalize(keypoints).float().detach()
+
+        # clone original X
+        ori_X = X[:, CA_INDEX].clone().detach()
+        # clone keypoints for receptor after transformation in R3
+        keypoints = keypoints.float().detach()
         trans_keypoints = keypoints.clone()
 
         # rotate and translate for antibodies, X' = XR + t
         rot, trans = sample_transformation(bid)
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
-            X[ab_idx] = X[ab_idx] @ rot[i] + trans[i]
-            trans_keypoints[k_bid == i] = trans_keypoints[k_bid == i] @ rot[i] + trans[i]
+            X[ab_idx] = X[ab_idx] @ rot[i] + trans[i] * torch.mean(self.normalizer.std)
+            trans_keypoints[k_bid == i] = trans_keypoints[k_bid == i] @ rot[i] + trans[i] * torch.mean(self.normalizer.std)
+
+        X = self.normalizer.normalize(X).float()
+        ori_X = self.normalizer.normalize(ori_X).float()
+        keypoints = self.normalizer.normalize(keypoints).float()
+        trans_keypoints = self.normalizer.normalize(trans_keypoints).float()
 
         node_attr, edges, edge_attr = self.graph_constructor(
             X, S, RP, ID, Seg, bid
@@ -96,7 +101,7 @@ class ExpDock(nn.Module):
         stable_loss = 0.
         match_loss = 0.
         # threshold
-        threshold = 10. / torch.mean(self.normalizer.std)
+        threshold = 8. / torch.mean(self.normalizer.std)
 
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
@@ -130,8 +135,9 @@ class ExpDock(nn.Module):
             torch.cuda.empty_cache()
             # compute dock loss
             _, R, t = kabsch_torch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
+            ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
-            dock_loss += F.mse_loss(trans[i][None, :] @ R, -t[None, :])
+            dock_loss += F.mse_loss((trans[i] - ct) @ R + t + ct, torch.zeros(3).to(device))
             # compute stable loss
             stable_loss += F.softplus(-max_triangle_area(Y1))
             stable_loss += F.softplus(-max_triangle_area(Y2))
