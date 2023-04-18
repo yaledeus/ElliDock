@@ -101,14 +101,14 @@ class ExpDock(nn.Module):
         stable_loss = 0.
         match_loss = 0.
         # threshold
-        threshold = 8. / torch.mean(self.normalizer.std)
+        threshold = 10. / torch.mean(self.normalizer.std)
 
         for i in range(len(rot)):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             ag_idx = torch.logical_and(Seg == 1, bid == i)
             H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
             refined_H1 = constrain_refine_hidden_space(H1, H2, ori_X[ab_idx], ori_X[ag_idx])
-            balance_loss = F.kl_div(F.log_softmax(H1, dim=1), F.softmax(refined_H1, dim=1), reduction="batchmean")
+            balance_loss += F.kl_div(F.log_softmax(H1, dim=1), F.softmax(refined_H1, dim=1), reduction="batchmean")
             X1, X2 = X[ab_idx], X[ag_idx]   # X1: (N, 3) X2: (M, 3)
             Y1 = torch.zeros(self.n_keypoints, 3).to(device)    # (K, 3)
             Y2 = torch.zeros(self.n_keypoints, 3).to(device)
@@ -249,7 +249,7 @@ def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):
     delta_X = ligand_center - X_r               # (N, 3)
     H_l_mean = torch.mean(H_l, dim=0)           # (K,)
     init_prod_H = (H_r @ H_l_mean).unsqueeze(1) # (N, 1)
-    A = torch.norm(delta_X).pow(-3) * delta_X   # (N, 3)
+    A = torch.norm(delta_X, dim=1).pow(-3)[:, None] * delta_X   # (N, 3)
     Force = init_prod_H * A                     # (N, 3)
     # F_U: (N, 3), F_S: (3,), F_Vh: (3, 3)
     F_U, F_S, F_Vh = torch.linalg.svd(Force, full_matrices=False)
