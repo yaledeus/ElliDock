@@ -88,6 +88,33 @@ def pairwise_dihedrals(coord, edges):
     return ir_dihed
 
 
+def local_orientation(coord):
+    """
+    Args:
+        coord:  (N, n_channel, 3).
+    Returns:
+        local orientation, (N, 9).
+    """
+    coord_N = coord[:, N_INDEX]  # (N, 3)
+    coord_CA = coord[:, CA_INDEX]
+    coord_C = coord[:, C_INDEX]
+
+    eps = 1e-6
+
+    vec_u = coord_N - coord_CA  # (N, 3)
+    vec_u = vec_u / (torch.norm(vec_u, dim=-1, keepdim=True) + eps)
+    vec_t = coord_C - coord_CA  # (N, 3)
+    vec_t = vec_t / (torch.norm(vec_t, dim=-1, keepdim=True) + eps)
+    vec_n = torch.cross(vec_u, vec_t)  # (N, 3)
+    vec_n = vec_n / (torch.norm(vec_n, dim=-1, keepdim=True) + eps)
+    vec_v = torch.cross(vec_n, vec_u)  # (N, 3)
+    vec_v = vec_v / (torch.norm(vec_v, dim=-1, keepdim=True) + eps)
+
+    local_ori = torch.cat([vec_n, vec_u, vec_v], dim=1)  # (N, 9)
+
+    return local_ori
+
+
 def reletive_position_orientation(coord, edges):
     """
     Args:
@@ -97,30 +124,23 @@ def reletive_position_orientation(coord, edges):
         Inter-residue relative position, (n_edges, 3).
     """
     row, col = edges
-    coord_N_src = coord[row, N_INDEX]  # (n_edges, 3)
-    coord_CA_src = coord[row, CA_INDEX]
+    coord_CA_src = coord[row, CA_INDEX] # (n_edges, 3)
     coord_CA_dst = coord[col, CA_INDEX]
-    coord_C_src = coord[row, C_INDEX]
 
-    coord_diff = coord_CA_src - coord_CA_dst    # (n_edges, 3)
+    coord_diff = coord_CA_src - coord_CA_dst        # (n_edges, 3)
 
-    eps = 1e-6
+    local_ori_src = local_orientation(coord[row])   # (n_edges, 9)
+    local_ori_dst = local_orientation(coord[col])   # (n_edges, 9)
 
-    vec_u = coord_N_src - coord_CA_src  # (n_edges, 3)
-    vec_u = vec_u / (torch.norm(vec_u, dim=-1, keepdim=True) + eps)
-    vec_t = coord_C_src - coord_CA_src  # (n_edges, 3)
-    vec_t = vec_t / (torch.norm(vec_t, dim=-1, keepdim=True) + eps)
-    vec_n = torch.cross(vec_u, vec_t)   # (n_edges, 3)
-    vec_n = vec_n / (torch.norm(vec_n, dim=-1, keepdim=True) + eps)
-    vec_v = torch.cross(vec_n, vec_u)   # (n_edges, 3)
-    vec_v = vec_v / (torch.norm(vec_v, dim=-1, keepdim=True) + eps)
+    vec_n_src, vec_u_src, vec_v_src = local_ori_src[:, :3], local_ori_src[:, 3:6], local_ori_src[:, 6:]
+    vec_n_dst, vec_u_dst, vec_v_dst = local_ori_dst[:, :3], local_ori_dst[:, 3:6], local_ori_dst[:, 6:]
 
-    local_coord_mat = torch.stack([vec_n, vec_u, vec_v], dim=1)    # (n_edges, 3, 3)
+    local_coord_mat = torch.stack([vec_n_src, vec_u_src, vec_v_src], dim=1)    # (n_edges, 3, 3)
 
-    rp = torch.matmul(local_coord_mat, coord_diff.unsqueeze(-1)).squeeze()  # (n_edges, 3)
-    feat_q = torch.matmul(local_coord_mat, vec_n.unsqueeze(-1)).squeeze()   # (n_edges, 3)
-    feat_k = torch.matmul(local_coord_mat, vec_u.unsqueeze(-1)).squeeze()  # (n_edges, 3)
-    feat_t = torch.matmul(local_coord_mat, vec_v.unsqueeze(-1)).squeeze()  # (n_edges, 3)
+    rp = torch.matmul(local_coord_mat, coord_diff.unsqueeze(-1)).squeeze()     # (n_edges, 3)
+    feat_q = torch.matmul(local_coord_mat, vec_n_dst.unsqueeze(-1)).squeeze()  # (n_edges, 3)
+    feat_k = torch.matmul(local_coord_mat, vec_u_dst.unsqueeze(-1)).squeeze()  # (n_edges, 3)
+    feat_t = torch.matmul(local_coord_mat, vec_v_dst.unsqueeze(-1)).squeeze()  # (n_edges, 3)
 
     rel_pos_ori = torch.cat([rp, feat_q, feat_k, feat_t], dim=-1)   # (n_edges, 3 * 4)
 

@@ -5,8 +5,9 @@ from torch import nn
 
 import sys
 sys.path.append('..')
-from data.bio_parse import AA_NAMES_1, MAX_CHAINS
-from data.geometry import get_backbone_dihedral_angles, pairwise_dihedrals, reletive_position_orientation
+from data.bio_parse import AA_NAMES_1
+from data.geometry import get_backbone_dihedral_angles, pairwise_dihedrals, reletive_position_orientation,\
+    local_orientation
 
 
 def sequential_and(*tensors):
@@ -69,20 +70,18 @@ class AminoAcidEmbedding(nn.Module):
     [residue embedding, position embedding]
     '''
 
-    def __init__(self, num_res_type, num_res_id, res_embed_size):
+    def __init__(self, num_res_type, res_embed_size):
         super().__init__()
         self.residue_embedding = nn.Embedding(num_res_type, res_embed_size)
         self.res_pos_embedding = SinusoidalPositionEmbedding(res_embed_size)  # relative positional encoding
-        self.res_id_embedding = nn.Embedding(num_res_id, res_embed_size)
 
-    def forward(self, S, RP, ID):
+    def forward(self, S, RP):
         '''
         :param S: [N], residue types
         :param RP: [N], residue positions
-        :param ID: [N], chain identifier, antibody: H/L, antigen: *
         '''
         # (N, embed_size)
-        res_embed = self.residue_embedding(S) + self.res_pos_embedding(RP) + self.res_id_embedding(ID)
+        res_embed = self.residue_embedding(S) + self.res_pos_embedding(RP)
         return res_embed  # (N, res_embed_size)
 
 
@@ -94,14 +93,17 @@ class ComplexGraph(nn.Module):
         self.embed_size = embed_size
         self.k_neighbors = k_neighbors
 
-        self.aa_embedding = AminoAcidEmbedding(self.num_aa_type, MAX_CHAINS, embed_size)
+        self.aa_embedding = AminoAcidEmbedding(self.num_aa_type, embed_size)
 
     def dihedral_embedding(self, X):
-        return get_backbone_dihedral_angles(X)
+        return get_backbone_dihedral_angles(X)  # (N, 3)
 
-    def embedding(self, X, S, RP, ID):
-        H = self.aa_embedding(S, RP, ID)
-        H = torch.cat([H, self.dihedral_embedding(X)], dim=-1)
+    def local_orientation_embedding(self, X):
+        return local_orientation(X) # (N, 9)
+
+    def embedding(self, X, S, RP):
+        H = self.aa_embedding(S, RP)
+        H = torch.cat([H, self.dihedral_embedding(X), self.local_orientation_embedding(X)], dim=-1)
         return H
 
     @torch.no_grad()
@@ -121,18 +123,17 @@ class ComplexGraph(nn.Module):
         return edges
 
     def pairwise_embedding(self, X, edges):
-        dihed = pairwise_dihedrals(X, edges)         # (n_edges, 2)
-        rel_pos_ori = reletive_position_orientation(X, edges)   # (n_edges, 12)
-        p_embed = torch.cat([dihed, rel_pos_ori], dim=-1)       # (n_edges, 14)
+        dihed = pairwise_dihedrals(X, edges)                                # (n_edges, 2)
+        rel_pos_ori = reletive_position_orientation(X, edges)               # (n_edges, 12)
+        p_embed = torch.cat([dihed, rel_pos_ori], dim=1)                    # (n_edges, 14)
         return p_embed
 
-
-    def forward(self, X, S, RP, ID, Seg, bid):
-        node_attr = self.embedding(X, S, RP, ID)                        # (N, embed_size + 3)
+    def forward(self, X, S, RP, Seg, bid):
+        node_attr = self.embedding(X, S, RP)                            # (N, embed_size + 12)
         edges = self._construct_edges(X, Seg, bid, self.k_neighbors)    # (2, n_edge)
         edge_attr = self.pairwise_embedding(X, edges)                   # (n_edge, 14)
         return node_attr, edges, edge_attr
 
     @classmethod
     def feature_dim(cls, embed_size):
-        return (embed_size + 3, 14)      # node_attr, edge_attr
+        return (embed_size + 12, 14)      # node_attr, edge_attr

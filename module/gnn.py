@@ -1,10 +1,11 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 import numpy as np
+from e3nn import o3
 from torch import nn
 import torch.nn.functional as F
 import torch
-from torch_scatter import scatter_softmax
+from torch_scatter import scatter, scatter_softmax
 from typing import List
 
 
@@ -22,9 +23,6 @@ def coord2radial(edges, coord):
 def coord2radialplus(edges, coord, scale: List):
     row, col = edges
     coord_diff = coord[row] - coord[col]    # (n_edges, 3)
-
-    norm = torch.norm(coord_diff, dim=-1, keepdim=True) + 1e-8
-    coord_diff = coord_diff / norm
     init_radial = torch.sum(coord_diff ** 2, 1).unsqueeze(1)    # (n_edges, 1)
 
     radial = []
@@ -33,6 +31,9 @@ def coord2radialplus(edges, coord, scale: List):
         radial.append(feat_dist)
 
     radial = torch.cat(radial, dim=-1)  # (n_edges, *)
+
+    norm = torch.norm(coord_diff, dim=-1, keepdim=True) + 1e-8
+    coord_diff = coord_diff / norm
 
     return radial, coord_diff
 
@@ -96,28 +97,28 @@ class Ch_Pos_GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, act_fn=nn.SiLU(), dropout=0.1, attention=True):
         super(Ch_Pos_GCL, self).__init__()
         self.attention = attention
-        input_edge = input_nf * 2 + hidden_nf * 2   # v_i, v_j, h_i, h_j
-        edge_coords_nf = 20          # <n_i, n_j> with order = {2,3,4,5,6}, d_ij with scale {1.5^x|x=0,1,...,14}
-
-        self.dropout = nn.Dropout(dropout)
+        input_edge = input_nf * 2 + hidden_nf * 2  # v_i, v_j, h_i, h_j
+        edge_coords_nf = 18  # dot(n_i, n_j) with order = {2,3,4}, d_ij with scale {1.5^x|x=0,1,...,14}
 
         self.ch_edge_mlp = nn.Sequential(
             nn.Linear(input_edge + edges_in_d, hidden_nf),
             act_fn,
-            nn.Linear(hidden_nf, hidden_nf),
-            act_fn
+            nn.Dropout(dropout),
+            nn.Linear(hidden_nf, hidden_nf)
         )
 
         self.pos_edge_mlp = nn.Sequential(
             nn.Linear(edge_coords_nf + edges_in_d, hidden_nf),
             act_fn,
-            nn.Linear(hidden_nf, hidden_nf),
-            act_fn
+            nn.Dropout(dropout),
+            nn.Linear(hidden_nf, hidden_nf)
         )
 
         self.shallow_mlp = nn.Sequential(
             nn.Linear(hidden_nf, hidden_nf),
-            act_fn
+            act_fn,
+            nn.Dropout(dropout),
+            nn.Linear(hidden_nf, hidden_nf)
         )
 
         if self.attention:
@@ -126,10 +127,11 @@ class Ch_Pos_GCL(nn.Module):
                 nn.Sigmoid()
             )
 
-    def forward(self, h, coord, edges, nvecs, node_attr, edge_attr=None):
+    def forward(self, h, coord, edges, node_attr, edge_attr=None):
         row, col = edges
         # radial, coord_diff = coord2radial(edges, coord)
-        radial, coord_diff = coord2radialplus(edges, coord, scale=[s for s in range(15)])
+        radial, coord_diff = coord2radialplus(edges, coord, scale=list(range(15)))
+        nvecs = coord2nforce(edges, coord, order=[2, 3, 4])
         nprod = vec2product(edges, nvecs)   # (n_edges, *)
 
         if edge_attr is None:
@@ -142,9 +144,7 @@ class Ch_Pos_GCL(nn.Module):
         chem = self.ch_edge_mlp(chem)
         pos = self.pos_edge_mlp(pos)
 
-        out = torch.mul(self.shallow_mlp(chem), pos)    # (n_edge, hidden_nf)
-
-        out = self.dropout(out)
+        out = torch.mul(self.shallow_mlp(chem), pos)    # (n_edges, hidden_nf)
 
         if self.attention:
             att_val = self.att_mlp(out)
@@ -171,10 +171,6 @@ class Tri_Att_GCL(nn.Module):
                 nn.Linear(input_nf, hidden_nf),
                 nn.Sigmoid()
             ))
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_q{h}'].weight)
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_k{h}'].weight)
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_v{h}'].weight)
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_b{h}'].weight)
 
         self.linear_out = nn.Linear(self.att_heads * hidden_nf, output_nf)
         torch.nn.init.xavier_uniform_(self.linear_out.weight)
@@ -236,26 +232,17 @@ class Transformer_GCL(nn.Module):
         self.hidden_nf = hidden_nf
         self.att_heads = att_heads
 
-        self.dropout = nn.Dropout(dropout)
-
         for h in range(self.att_heads):
             self.add_module(f'linear_q{h}', nn.Linear(input_nf, hidden_nf, bias=False))
             self.add_module(f'linear_k{h}', nn.Linear(input_nf, hidden_nf, bias=False))
             self.add_module(f'linear_v{h}', nn.Linear(input_nf, hidden_nf, bias=False))
-            self.add_module(f'mlp_g{h}', nn.Sequential(
-                nn.Linear(input_nf, hidden_nf),
-                nn.Sigmoid()
-            ))
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_q{h}'].weight)
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_k{h}'].weight)
-            torch.nn.init.xavier_uniform_(self._modules[f'linear_v{h}'].weight)
 
         self.linear_out = nn.Sequential(
-            nn.Linear(input_nf, hidden_nf),
+            nn.Linear(hidden_nf, hidden_nf),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_nf, output_nf)
         )
-
 
     def forward(self, Z, edges):
         """
@@ -267,20 +254,61 @@ class Transformer_GCL(nn.Module):
         z_update = torch.zeros_like(Z)
 
         for h in range(self.att_heads):
-            q = self._modules[f'linear_q{h}'](Z)    # (n_edges, hidden_nf)
-            k = self._modules[f'linear_k{h}'](Z)    # (n_edges, hidden_nf)
-            v = self._modules[f'linear_v{h}'](Z)    # (n_edges, hidden_nf)
-            g = self._modules[f'mlp_g{h}'](Z)       # (n_edges, hidden_nf)
+            q = self._modules[f'linear_q{h}'](Z)  # (n_edges, hidden_nf)
+            k = self._modules[f'linear_k{h}'](Z)  # (n_edges, hidden_nf)
+            v = self._modules[f'linear_v{h}'](Z)  # (n_edges, hidden_nf)
 
             Att = 1. / np.sqrt(self.hidden_nf) * (q[:, None, :] @ k[:, :, None]).squeeze()  # (n_edges)
-            Att = scatter_softmax(Att, row).unsqueeze(1)     # (n_edges, 1)
-            z_update += Att * v * g                 # (n_edges, hidden_nf)
+            Att = scatter_softmax(Att, row).unsqueeze(1)  # (n_edges, 1)
+            z_update += Att * v  # (n_edges, hidden_nf)
 
-        output = Z + z_update   # residual, (n_edges, output_nf)
-        output = output + self.linear_out(output)
-        output = self.dropout(output)
+        output = self.linear_out(z_update)
 
         return output
+
+
+class TPCL(nn.Module):
+    """
+        Tensor product convolution layer
+    """
+    def __init__(self, in_irreps, sh_irreps, out_irreps, n_edge_features,
+                 hidden_features, dropout=0.1):
+        super(TPCL, self).__init__()
+        self.in_irreps = in_irreps
+        self.out_irreps = out_irreps
+        self.sh_irreps = sh_irreps
+
+        self.tensor_prod = o3.FullyConnectedTensorProduct(
+            in_irreps, sh_irreps, out_irreps, shared_weights=False
+        )
+
+        self.fc = nn.Sequential(
+            nn.Linear(n_edge_features, hidden_features),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_features, self.tensor_prod.weight_numel),
+        )
+
+    def forward(
+        self,
+        node_attr,
+        edge_index,
+        edge_attr,
+        edge_sh,
+        out_nodes=None,
+        reduction="mean",
+    ):
+        """
+        @param edge_index  (2, n_edges)
+        @param edge_sh  edge spherical harmonics
+        """
+        edge_src, edge_dst = edge_index
+        tp = self.tensor_prod(node_attr[edge_dst], edge_sh, self.fc(edge_attr))
+
+        out_nodes = out_nodes or node_attr.shape[0]
+        out = scatter(tp, edge_src, dim=0, dim_size=out_nodes, reduce=reduction)
+
+        return out
 
 
 ### Pairwise energy && Triangular self-Attention EGNN
@@ -298,7 +326,7 @@ class PTA_EGNN(nn.Module):
             act_fn, dropout
         )
 
-        self.tri_att_gcl = Tri_Att_GCL(
+        self.transformer_gcl = Transformer_GCL(
             hidden_nf, hidden_nf, hidden_nf, att_heads,
             dropout
         )
@@ -321,12 +349,12 @@ class PTA_EGNN(nn.Module):
             nn.Linear(hidden_nf, hidden_nf)
         )
 
-    def forward(self, h, coord, edges, nvecs, edge_attr, node_attr, init_coord, klist):
+    def forward(self, h, coord, edges, edge_attr, node_attr, init_coord):
 
         # z: (n_edge, hidden_nf), coord_diff: (n_edge, 3)
-        z, chem, pos, coord_diff = self.ch_pos_gcl(h, coord, edges, nvecs, node_attr, edge_attr)
+        z, chem, pos, coord_diff = self.ch_pos_gcl(h, coord, edges, node_attr, edge_attr)
         # m: (n_edge, hidden_nf)
-        m = self.tri_att_gcl(z, klist)
+        m = self.transformer_gcl(z, edges)
 
         # update coordinates
         ita = .2    # weight for initial coordinate
