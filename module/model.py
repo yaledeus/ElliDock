@@ -209,9 +209,11 @@ class ExpDock(nn.Module):
         match_loss /= len(rot)
         rmsd_loss /= len(rot)
 
+        bind_loss = ot_loss * dock_loss
+
         loss = ot_loss + dock_loss + stable_loss + match_loss
 
-        return loss, (ot_loss, dock_loss, stable_loss, match_loss, rmsd_loss)
+        return loss, (ot_loss, dock_loss, bind_loss, stable_loss, match_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, bid, **kwargs):
         device = X.device
