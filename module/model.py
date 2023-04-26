@@ -30,7 +30,13 @@ class ExpDock(nn.Module):
 
         self.graph_constructor = ComplexGraph(embed_size, k_neighbors)
 
-        self.linear_in = nn.Linear(node_in_d, hidden_size)
+        self.in_conv = TPCL(
+            o3.Irreps(f"{node_in_d - 9}x0e + 3x1e"),
+            self.sh_irreps,
+            o3.Irreps(f"{self.hidden_size}x0e"),
+            edge_in_d,
+            self.hidden_size
+        )
 
         for i in range(self.n_layers):
             self.add_module(f'gnn_{i}', PTA_EGNN(
@@ -45,15 +51,9 @@ class ExpDock(nn.Module):
                 nn.Linear(self.hidden_size, self.hidden_size)
             ))
 
-        self.final_conv = TPCL(
-            o3.Irreps(f"{self.hidden_size}x0o"),
-            self.sh_irreps,
-            o3.Irreps(f"{self.n_keypoints}x1o + {self.n_keypoints}x1e"),
-            edge_in_d,
-            self.hidden_size
-        )
-
-        self.inter_att = nn.Parameter(torch.rand(hidden_size, hidden_size))
+        for i in range(self.n_keypoints):
+            self.register_parameter(f'w1_mat_{i}', nn.Parameter(torch.rand(hidden_size, hidden_size)))
+            self.register_parameter(f'w2_mat_{i}', nn.Parameter(torch.rand(hidden_size, hidden_size)))
 
         self._init()
 
@@ -104,7 +104,13 @@ class ExpDock(nn.Module):
         X = X[:, CA_INDEX]      # (N, 3)
         init_X = X.clone()
 
-        H = self.linear_in(node_attr)
+        coord_diff = init_X[src] - init_X[dst]  # (n_edges, 3)
+        edge_sh = o3.spherical_harmonics(self.sh_irreps, coord_diff,
+                                         normalize=True, normalization='component')  # (n_edges, 9)
+
+        H = self.in_conv(
+            node_attr, edges, edge_attr, edge_sh
+        )   # (N, hidden_size)
 
         for i in range(self.n_layers):
             UH, X = self._modules[f'gnn_{i}'](
@@ -122,23 +128,14 @@ class ExpDock(nn.Module):
                                            dim=0).unsqueeze(1)
                 )
 
-        coord_diff = init_X[src] - init_X[dst]  # (n_edges, 3)
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, coord_diff,
-                                        normalize=True, normalization='component')  # (n_edges, 9)
-        pred_score = self.final_conv(
-            H, edges, edge_attr, edge_sh
-        )  # (N, 2 * 3 * n_keypoints)
-        span = 3 * self.n_keypoints
-
         # optimal transport loss & keypoint loss & dock loss & rmsd loss &
         # stable loss & match loss
-        balance_loss = 0.
         ot_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
         stable_loss = 0.
         match_loss = 0.
-        # threshold
+        # threshold (loose)
         threshold = 8. / torch.mean(self.normalizer.std)
 
         for i in range(bs):
@@ -147,20 +144,17 @@ class ExpDock(nn.Module):
             H1, H2 = H[ab_idx], H[ag_idx]   # H1: (N, hidden_size) H2: (M, hidden_size)
             # refined_H1 = constrain_refine_hidden_space(H1, H2, ori_X[ab_idx], ori_X[ag_idx])
             # balance_loss += F.kl_div(F.log_softmax(H1, dim=1), F.softmax(refined_H1, dim=1), reduction="batchmean")
-            # X1, X2 = X[ab_idx], X[ag_idx]   # X1: (N, 3) X2: (M, 3)
-            alpha_ab = F.softmax((H1 @ self.inter_att @ H2.T).mean(dim=1), dim=0).unsqueeze(1)  # (N, 1)
-            alpha_ag = F.softmax((H2 @ self.inter_att @ H1.T).mean(dim=1), dim=0).unsqueeze(1)  # (M, 1)
-            Y1 = [(alpha_ab * (pred_score[ab_idx][:, 3*j:3*(j+1)] +
-                               pred_score[ab_idx][:, span+3*j:span+3*(j+1)]))
-                  .mean(dim=0, keepdim=True)
+            X1, X2 = X[ab_idx], X[ag_idx]   # X1: (N, 3) X2: (M, 3)
+            Y1 = [F.softmax(1. / np.sqrt(self.hidden_size) *
+                            (H1 @ self._parameters[f'w1_mat_{j}'] @ H2.T)
+                             .mean(dim=1), dim=0).unsqueeze(0) @ X1
                   for j in range(self.n_keypoints)]
-            Y2 = [(alpha_ag * (pred_score[ag_idx][:, 3*j:3*(j+1)] +
-                               pred_score[ag_idx][:, span+3*j:span+3*(j+1)]))
-                  .mean(dim=0, keepdim=True)
+            Y2 = [F.softmax(1. / np.sqrt(self.hidden_size) *
+                            (H2 @ self._parameters[f'w2_mat_{j}'] @ H1.T)
+                            .mean(dim=1), dim=0).unsqueeze(0) @ X2
                   for j in range(self.n_keypoints)]
-            # O(3) equivalence => E(3) equivalence
-            Y1 = torch.cat(Y1, dim=0) + init_X[ab_idx].mean(dim=0)
-            Y2 = torch.cat(Y2, dim=0) + init_X[ag_idx].mean(dim=0)
+            Y1 = torch.cat(Y1, dim=0)
+            Y2 = torch.cat(Y2, dim=0)
             P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
             D1 = torch.cdist(Y1, P1)    # (K, S)
             min_indices_1 = torch.argmin(D1, dim=1)     # (K,)
@@ -172,13 +166,22 @@ class ExpDock(nn.Module):
             del D2  # free memory
             torch.cuda.empty_cache()
             # compute dock loss
-            _, R, t = kabsch_torch(Y1, Y2)   # minimize RMSD(Y1R + t, Y2)
+            _, R1, t1 = quadratic_surface_fit(Y1)
+            _, R2, t2 = quadratic_surface_fit(Y2)
+            R = R1 @ R2.T
+            t = (t1 - t2) @ R2.T
             ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
-            dock_loss += F.mse_loss((trans[i] - ct) @ R + t + ct, torch.zeros(3).to(device))
+            dock_loss += F.mse_loss((trans[i] - ct) @ rot[i].T + t + ct, torch.zeros(3).to(device))
             # compute stable loss
             stable_loss += F.softplus(-max_triangle_area(Y1))
             stable_loss += F.softplus(-max_triangle_area(Y2))
+            stable_loss += 1. / (torch.mean(self.normalizer.std) ** 2) * \
+                           protein_surface_intersection(init_X[ab_idx] * torch.mean(self.normalizer.std),
+                                                    Y1 * torch.mean(self.normalizer.std)).clip(min=0.).mean()
+            stable_loss += 1. / (torch.mean(self.normalizer.std) ** 2) * \
+                           protein_surface_intersection(init_X[ag_idx] * torch.mean(self.normalizer.std),
+                                                    Y2 * torch.mean(self.normalizer.std)).clip(min=0.).mean()
             # compute match loss
             D_abag = torch.cdist(ori_X[ab_idx], ori_X[ag_idx])  # (N, M)
             ab_dock_scope, ag_dock_scope = torch.where(D_abag < threshold)
@@ -206,11 +209,9 @@ class ExpDock(nn.Module):
         match_loss /= len(rot)
         rmsd_loss /= len(rot)
 
-        bind_loss = ot_loss * dock_loss
+        loss = ot_loss + dock_loss + stable_loss + match_loss
 
-        loss = bind_loss + stable_loss + match_loss
-
-        return loss, (ot_loss, dock_loss, bind_loss, stable_loss, match_loss, balance_loss, rmsd_loss)
+        return loss, (ot_loss, dock_loss, stable_loss, match_loss, rmsd_loss)
 
     def dock(self, X, S, RP, ID, Seg, center, bid, **kwargs):
         device = X.device
@@ -230,7 +231,13 @@ class ExpDock(nn.Module):
         X = X[:, CA_INDEX]  # (N, 3)
         init_X = X.clone()
 
-        H = self.linear_in(node_attr)
+        coord_diff = init_X[src] - init_X[dst]  # (n_edges, 3)
+        edge_sh = o3.spherical_harmonics(self.sh_irreps, coord_diff,
+                                         normalize=True, normalization='component')  # (n_edges, 9)
+
+        H = self.in_conv(
+            node_attr, edges, edge_attr, edge_sh
+        )  # (N, hidden_size)
 
         for i in range(self.n_layers):
             UH, X = self._modules[f'gnn_{i}'](
@@ -239,43 +246,36 @@ class ExpDock(nn.Module):
             for b_ind in range(bs):
                 ab_idx = torch.logical_and(Seg == 0, bid == b_ind)
                 ag_idx = torch.logical_and(Seg == 1, bid == b_ind)
-                H[ab_idx] = UH[ab_idx] + self._modules[f'inter_{i}'](
+                H[ab_idx] = UH[ab_idx] + self._modules[f'inter_act_{i}'](
                     UH[ab_idx] * F.softmax((UH[ab_idx] @ UH[ag_idx].T).mean(dim=1),
                                            dim=0).unsqueeze(1)
                 )
-                H[ag_idx] = UH[ag_idx] + self._modules[f'inter_{i}'](
+                H[ag_idx] = UH[ag_idx] + self._modules[f'inter_act_{i}'](
                     UH[ag_idx] * F.softmax((UH[ag_idx] @ UH[ab_idx].T).mean(dim=1),
                                            dim=0).unsqueeze(1)
                 )
 
         dock_trans_list = []
 
-        coord_diff = init_X[src] - init_X[dst]  # (n_edges, 3)
-        edge_sh = o3.spherical_harmonics(self.sh_irreps, coord_diff,
-                                         normalize=True, normalization='component')  # (n_edges, 9)
-        pred_score = self.final_conv(
-            H, edges, edge_attr, edge_sh
-        )  # (N, 2 * 3 * n_keypoints)
-        span = 3 * self.n_keypoints
-
         for i in range(bs):
             ab_idx = torch.logical_and(Seg == 0, bid == i)
             ag_idx = torch.logical_and(Seg == 1, bid == i)
             H1, H2 = H[ab_idx], H[ag_idx]
-            alpha_ab = F.softmax((H1 @ self.inter_att @ H2.T).mean(dim=1), dim=0).unsqueeze(1)  # (N, 1)
-            alpha_ag = F.softmax((H2 @ self.inter_att @ H1.T).mean(dim=1), dim=0).unsqueeze(1)  # (M, 1)
-            Y1 = [(alpha_ab * (pred_score[ab_idx][:, 3*j:3*(j+1)] +
-                               pred_score[ab_idx][:, span+3*j:span+3*(j+1)]))
-                      .mean(dim=0, keepdim=True)
+            X1, X2 = X[ab_idx], X[ag_idx]
+            Y1 = [F.softmax(1. / np.sqrt(self.hidden_size) *
+                            (H1 @ self._parameters[f'w1_mat_{j}'] @ H2.T)
+                            .mean(dim=1), dim=0).unsqueeze(0) @ X1
                   for j in range(self.n_keypoints)]
-            Y2 = [(alpha_ag * (pred_score[ag_idx][:, 3*j:3*(j+1)] +
-                               pred_score[ag_idx][:, span+3*j:span+3*(j+1)]))
-                      .mean(dim=0, keepdim=True)
+            Y2 = [F.softmax(1. / np.sqrt(self.hidden_size) *
+                            (H2 @ self._parameters[f'w2_mat_{j}'] @ H1.T)
+                            .mean(dim=1), dim=0).unsqueeze(0) @ X2
                   for j in range(self.n_keypoints)]
-            # SO(3) equivalence => E(3) equivalence
-            Y1 = torch.cat(Y1, dim=0) + init_X[ab_idx].mean(dim=0)
-            Y2 = torch.cat(Y2, dim=0) + init_X[ag_idx].mean(dim=0)
-            _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
+            Y1 = torch.cat(Y1, dim=0)
+            Y2 = torch.cat(Y2, dim=0)
+            _, R1, t1 = quadratic_surface_fit(Y1)
+            _, R2, t2 = quadratic_surface_fit(Y2)
+            R = R1 @ R2.T
+            t = (t1 - t2) @ R2.T
             init_X[ab_idx] = init_X[ab_idx] @ R + t
             dock_trans_list.append(self.normalizer.dock_transformation(center, i, R, t))
 

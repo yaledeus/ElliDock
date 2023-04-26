@@ -241,15 +241,84 @@ def kabsch_numpy(P: np.ndarray, Q: np.ndarray):
     return (UP @ R + QC).astype(np.float32), R.astype(np.float32), t.astype(np.float32)
 
 
-def protein_surface_intersection(X, Y, sigma=1.67, gamma=0.67):
+def protein_surface_intersection(X, Y, sigma=25, gamma=10):
     """
     :param X: point cloud  to be referenced, (N, 3)
     :param Y: point cloud to be tested whether it is outside the protein, (M, 3)
     :param sigma, gamma: parameter
-    :return:
+    :return: (M,)
     """
-    return (gamma + sigma * ((-((Y.unsqueeze(1).repeat(1, X.shape[0], 1) - X) ** 2).sum(dim=-1) / sigma)
-                             .exp().sum(dim=1)).log())
+    return (gamma + sigma * torch.logsumexp(-(Y.unsqueeze(1).repeat(1, X.shape[0], 1) - X)
+                                            .pow(2).sum(dim=-1) / sigma, dim=1))
+
+
+def Gaussian_surface_fit(coord):
+    """
+    :param coord: coordinates in R3 to be fitted, (N, 3)
+    :return: a := peak, bx := surface peak x-coord, y0 := surface peak y-coord,
+            cx := surface peak x-std, cy := surface peak y-std
+    """
+    X, Y, Z = coord[:, 0], coord[:, 1], coord[:, 2]
+
+    X = X.unsqueeze(1)  # (N, 1)
+    Y = Y.unsqueeze(1)
+
+    A = torch.cat([torch.ones_like(X), X, Y, X**2, Y**2], dim=1)    # (N, 5)
+    params = torch.linalg.pinv(A.T @ A) @ A.T @ Z   # (5,)
+
+    cx, cy = torch.sqrt(-0.5 / params[3]), torch.sqrt(-0.5 / params[4])
+    x0, y0 = params[1] * cx**2, params[2] * cy**2
+    a = (params[0] + 0.5 * x0 * params[1] + 0.5 * y0 * params[2]).exp()
+
+    return (a, x0, y0, cx, cy)
+
+
+def quadratic_surface_fit(coord):
+    """
+    :param coord: coordinates in R3 to be fitted, (N, 3)
+    :return: standard quadratic coefficient, (6,)
+             R (3, 3), t (3,), where XR + t fit the standard quadratic surface
+    """
+    device = coord.device
+    scale = 1e-2
+
+    X, Y, Z = coord[:, 0], coord[:, 1], coord[:, 2]
+
+    X = X.unsqueeze(1)  # (N, 1)
+    Y = Y.unsqueeze(1)
+    Z = Z.unsqueeze(1)
+
+    A = torch.cat([X**2, Y**2, Z**2, X*Y, Y*Z, Z*X, X, Y, Z], dim=1)    # (N, 9)
+    b = scale * torch.ones_like(X).squeeze()        # (N,)
+    params = torch.linalg.pinv(A.T @ A) @ A.T @ b   # (9,)
+
+    transform_mat = torch.tensor(
+        [[params[0], 0.5 * params[3], 0.5 * params[5], 0.5 * params[6]],
+         [0.5 * params[3], params[1], 0.5 * params[4], 0.5 * params[7]],
+         [0.5 * params[5], 0.5 * params[4], params[2], 0.5 * params[8]],
+         [0.5 * params[6], 0.5 * params[7], 0.5 * params[8], -scale]], device=device
+    )   # (4, 4)
+
+    quadratic_mat = transform_mat[:3, :3]   # (3, 3), symmetric matrix
+    L, Q = torch.linalg.eigh(quadratic_mat) # L: (3,), Q: (3, 3)
+
+    # primary coefficient after rotation
+    primary = Q.T @ transform_mat[:3, 3]
+    non_zero = L != 0
+    # translate vector
+    t = torch.zeros_like(L)
+    t[non_zero] = primary[non_zero] / L[non_zero]
+    # const coefficient
+    cons = scale + torch.sum(primary[non_zero] ** 2 / L[non_zero])
+    # quadratic coefficient
+    quad_params = L * scale / cons
+    # primary coefficient
+    prim_params = torch.zeros_like(L)
+    prim_params[~non_zero] = 2 * primary[~non_zero] * scale / cons
+    # standard coefficient
+    std_params = torch.cat([quad_params, prim_params], dim=0)
+
+    return std_params, Q, t
 
 
 def max_triangle_area(points):
