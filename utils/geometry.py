@@ -3,7 +3,10 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
-from bio_parse import N_INDEX, CA_INDEX, C_INDEX
+
+import sys
+sys.path.append('..')
+from data.bio_parse import N_INDEX, CA_INDEX, C_INDEX
 
 
 def dihedral_from_four_points(p0, p1, p2, p3):
@@ -276,11 +279,9 @@ def Gaussian_surface_fit(coord):
 def quadratic_surface_fit(coord):
     """
     :param coord: coordinates in R3 to be fitted, (N, 3)
-    :return: standard quadratic coefficient, (6,)
-             R (3, 3), t (3,), where XR + t fit the standard quadratic surface
+    :return: coefficient, (9,), Ax^2 + By^2 + Cz^2 + Dxy + Eyz + Fzx + Gx + Hy + Iz = 1
     """
     device = coord.device
-    scale = 1e-2
 
     X, Y, Z = coord[:, 0], coord[:, 1], coord[:, 2]
 
@@ -289,22 +290,26 @@ def quadratic_surface_fit(coord):
     Z = Z.unsqueeze(1)
 
     A = torch.cat([X**2, Y**2, Z**2, X*Y, Y*Z, Z*X, X, Y, Z], dim=1)    # (N, 9)
-    b = scale * torch.ones_like(X).squeeze()        # (N,)
+    b = torch.ones_like(X).squeeze()         # (N,)
     params = torch.linalg.pinv(A.T @ A) @ A.T @ b   # (9,)
 
-    transform_mat = torch.tensor(
-        [[params[0], 0.5 * params[3], 0.5 * params[5], 0.5 * params[6]],
-         [0.5 * params[3], params[1], 0.5 * params[4], 0.5 * params[7]],
-         [0.5 * params[5], 0.5 * params[4], params[2], 0.5 * params[8]],
-         [0.5 * params[6], 0.5 * params[7], 0.5 * params[8], -scale]], device=device
-    )   # (4, 4)
+    return params
 
-    quadratic_mat = transform_mat[:3, :3]   # (3, 3), symmetric matrix
+
+def standard_quadratic_transform(A, b, scale=1.):
+    """
+    :param A, b, scale: <Ax, x> + <b, x> = scale
+    :return: standard coefficient, (6,), Ax^2 + By^2 + Cz^2 + Dx + Ey + Fz = scale
+             Q, (3, 3), rotation matrix, t, (3,), translate vector
+    """
+    threshold = 1e-2    # |eigenvalues| < threshold are considered as zero
+
+    quadratic_mat = 0.5 * (A + A.T)         # (3, 3), quadratic coefficient (symmetric) matrix
     L, Q = torch.linalg.eigh(quadratic_mat) # L: (3,), Q: (3, 3)
 
     # primary coefficient after rotation
-    primary = Q.T @ transform_mat[:3, 3]
-    non_zero = L != 0
+    primary = Q.T @ b
+    non_zero = L.abs() > threshold
     # translate vector
     t = torch.zeros_like(L)
     t[non_zero] = primary[non_zero] / L[non_zero]
@@ -319,6 +324,19 @@ def quadratic_surface_fit(coord):
     std_params = torch.cat([quad_params, prim_params], dim=0)
 
     return std_params, Q, t
+
+
+def quadratic_O3_to_E3(A, b, scale, t):
+    """
+    :param A, b, scale: <Ax, x> + <b, x> = scale, A (3, 3), b (3,)
+    :param t: translate vector, (3,)
+    :return: A', b' after translate
+    """
+    cons = scale - t @ A @ t - t @ b
+    A_prime = A * scale / cons
+    b_prime = (b + (A + A.T) @ t) * scale / cons
+
+    return A_prime, b_prime
 
 
 def max_triangle_area(points):
@@ -415,76 +433,6 @@ def recon_orthogonal_matrix(Q, v):
     new_Q = torch.hstack([q[:, 1:], norm_v])
 
     return new_Q
-
-
-def orthogonal_null_space_vec(A, init_u=None):
-    """
-    :param A: row-orthogonal matrix, (3, 9)
-    :param init_u: initial vector, (9,), default: None
-    :return: v s.t. Av=0 and v[:3], v[3:6], v[6:] constitutes an orthogonal basis of R3 space
-    """
-    device = A.device
-    def target_derivative(A1, A2, A3, u1, u2, u3):
-        partial_target2u1 = 2 * (A1.T @ A1 @ u1 + A1.T @ A2 @ u2 + A1.T @ A3 @ u3)
-        partial_target2u2 = 2 * (A2.T @ A1 @ u1 + A2.T @ A2 @ u2 + A2.T @ A3 @ u3)
-        partial_target2u3 = 2 * (A3.T @ A1 @ u1 + A3.T @ A2 @ u2 + A3.T @ A3 @ u3)
-        return (partial_target2u1, partial_target2u2, partial_target2u3)
-
-    def punishment_derivative(u1, u2, u3):
-        partial_punish2u1 = 2 * ((torch.dot(u1, u1) - 1) * u1 + torch.dot(u1, u2) * u2 + torch.dot(u1, u3) * u3)
-        partial_punish2u2 = 2 * (torch.dot(u2, u1) * u1 + (torch.dot(u2, u2) - 1) * u2 + torch.dot(u2, u3) * u3)
-        partial_punish2u3 = 2 * (torch.dot(u3, u1) * u1 + torch.dot(u3, u2) * u2 + (torch.dot(u3, u3) - 1) * u3)
-        return (partial_punish2u1, partial_punish2u2, partial_punish2u3)
-
-    def derivative(A1, A2, A3, u1, u2, u3, rho=1.):
-        partial_target2u1, partial_target2u2, partial_target2u3 = target_derivative(A1, A2, A3, u1, u2, u3)
-        partial_punish2u1, partial_punish2u2, partial_punish2u3 = punishment_derivative(u1, u2, u3)
-        return (
-            partial_target2u1 + 0.5 * rho * partial_punish2u1,
-            partial_target2u2 + 0.5 * rho * partial_punish2u2,
-            partial_target2u3 + 0.5 * rho * partial_punish2u3
-            )
-
-
-    assert A.shape == (3, 9)
-    # A1, A2, A3: (3, 3) matrix, under most conditions invertible
-    A1 = A[:, :3]
-    A2 = A[:, 3:6]
-    A3 = A[:, 6:]
-    # u1, u2, u3: (3,) vector
-    if not init_u is None:
-        u1 = init_u[:3].clone()
-        u2 = init_u[3:6].clone()
-        u3 = init_u[6:].clone()
-    else:
-        u1 = torch.rand(3).to(device)
-        u2 = torch.rand(3).to(device)
-        u3 = torch.rand(3).to(device)
-
-    iteration = 50
-    lr = torch.linspace(1e-1, 1e-3, steps=iteration)
-    rho = 1.
-
-    for i in range(iteration):
-        deriv2u1, deriv2u2, deriv2u3 = derivative(A1, A2, A3, u1, u2, u3, rho)
-        u1 = u1 - lr[i] * deriv2u1
-        u2 = u2 - lr[i] * deriv2u2
-        u3 = u3 - lr[i] * deriv2u3
-
-    v = torch.hstack([u1, u2, u3])
-    return v
-"""
-# test orthogonal null space vec
-A = torch.rand(3, 9)
-v = orthogonal_null_space_vec(A)
-print(f"||Av||: {torch.norm(A @ v)}")
-print(f"||v1||: {torch.norm(v[:3])}")
-print(f"||v2||: {torch.norm(v[3:6])}")
-print(f"||v3||: {torch.norm(v[6:])}")
-print(f"v1 @ v2: {torch.dot(v[:3], v[3:6])}")
-print(f"v2 @ v3: {torch.dot(v[3:6], v[6:])}")
-print(f"v3 @ v1: {torch.dot(v[6:], v[:3])}")
-"""
 
 
 class CoordNomralizer(nn.Module):

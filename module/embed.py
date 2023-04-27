@@ -5,9 +5,9 @@ from torch import nn
 
 import sys
 sys.path.append('..')
-from data.bio_parse import AA_NAMES_1
-from data.geometry import get_backbone_dihedral_angles, pairwise_dihedrals, reletive_position_orientation,\
-    local_orientation
+from data.bio_parse import CA_INDEX, AA_NAMES_1
+from utils.geometry import get_backbone_dihedral_angles, pairwise_dihedrals, reletive_position_orientation
+from .gnn import coord2radialplus, coord2nforce, vec2product
 
 
 def sequential_and(*tensors):
@@ -98,12 +98,9 @@ class ComplexGraph(nn.Module):
     def dihedral_embedding(self, X):
         return get_backbone_dihedral_angles(X)  # (N, 3)
 
-    def local_orientation_embedding(self, X):
-        return local_orientation(X) # (N, 9)
-
     def embedding(self, X, S, RP):
         H = self.aa_embedding(S, RP)
-        H = torch.cat([H, self.dihedral_embedding(X), self.local_orientation_embedding(X)], dim=-1)
+        H = torch.cat([H, self.dihedral_embedding(X)], dim=-1)
         return H
 
     @torch.no_grad()
@@ -125,15 +122,18 @@ class ComplexGraph(nn.Module):
     def pairwise_embedding(self, X, edges):
         dihed = pairwise_dihedrals(X, edges)                                # (n_edges, 2)
         rel_pos_ori = reletive_position_orientation(X, edges)               # (n_edges, 12)
-        p_embed = torch.cat([dihed, rel_pos_ori], dim=1)                    # (n_edges, 14)
+        radialplus, _ = coord2radialplus(edges, X[:, CA_INDEX], scale=list(range(15)))   # (n_edges, 15)
+        nvecs = coord2nforce(edges, X[:, CA_INDEX], order=[2, 3, 4])
+        nprod = vec2product(edges, nvecs)                                   # (n_edges, 3)
+        p_embed = torch.cat([dihed, rel_pos_ori, radialplus, nprod], dim=1) # (n_edges, 32)
         return p_embed
 
     def forward(self, X, S, RP, Seg, bid):
-        node_attr = self.embedding(X, S, RP)                            # (N, embed_size + 12)
+        node_attr = self.embedding(X, S, RP)                            # (N, embed_size + 3)
         edges = self._construct_edges(X, Seg, bid, self.k_neighbors)    # (2, n_edge)
         edge_attr = self.pairwise_embedding(X, edges)                   # (n_edge, 14)
         return node_attr, edges, edge_attr
 
     @classmethod
     def feature_dim(cls, embed_size):
-        return (embed_size + 12, 14)      # node_attr, edge_attr
+        return (embed_size + 3, 32)      # node_attr, edge_attr

@@ -1,7 +1,6 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 import os
-import re
 import argparse
 import torch
 from torch.utils.data import DataLoader
@@ -52,6 +51,9 @@ def parse():
     parser.add_argument('--n_keypoints', type=int, default=10, help='Number of keypoints')
     parser.add_argument('--att_heads', type=int, default=4, help='Number of attention heads')
 
+    parser.add_argument('--rbf_dim', type=int, default=20, help='RBF embed dimension')
+    parser.add_argument('--r_cut', type=float, default=1., help='radial cutoff threshold')
+
     return parser.parse_args()
 
 
@@ -89,9 +91,8 @@ def main(args):
         from module import ExpDock
         if not args.ckpt:
             model = ExpDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
-                            att_heads=args.att_heads, n_layers=args.n_layers,
-                            n_keypoints=args.n_keypoints, dropout=args.dropout,
-                            mean=mean, std=std)
+                            n_layers=args.n_layers, rbf_dim=args.rbf_dim, r_cut=args.r_cut,
+                            dropout=args.dropout, mean=mean, std=std)
         else:
             model = torch.load(args.ckpt, map_location='cpu')
 

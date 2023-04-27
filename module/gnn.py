@@ -39,7 +39,7 @@ def coord2radialplus(edges, coord, scale: List):
 
 
 def vec2product(edges, vec):
-    # vec: [N, *, 3]
+    # vec: (N, *, 3)
     row, col = edges
     n_edges = edges.shape[1]
     product = torch.mul(vec[row], vec[col])     # (n_edges, *, 3)
@@ -64,6 +64,18 @@ def coord2nforce(edges, coord, order: List):
 
     nvecs = torch.stack(nvecs, dim=1)  # (N, *, 3)
     return nvecs
+
+
+def RBF(radial, r_cut=1., embed_dim=20):
+    """
+    :param radial: ||r_ij||, (N, 1)
+    :param r_cut: cutoff threshold
+    :return: radial basis function, (N, embed_dim)
+    """
+    rbf = [torch.sin(n * np.pi * radial / r_cut) / radial for n in range(embed_dim)]
+    rbf = torch.cat(rbf, dim=1)
+
+    return rbf
 
 
 ### find k satisfies i->j, i->k, j->k
@@ -97,7 +109,7 @@ class Ch_Pos_GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, act_fn=nn.SiLU(), dropout=0.1, attention=True):
         super(Ch_Pos_GCL, self).__init__()
         self.attention = attention
-        input_edge = input_nf * 2 + hidden_nf * 2  # v_i, v_j, h_i, h_j
+        input_edge = input_nf + hidden_nf  # v_j, h_j
         edge_coords_nf = 18  # dot(n_i, n_j) with order = {2,3,4}, d_ij with scale {1.5^x|x=0,1,...,14}
 
         self.ch_edge_mlp = nn.Sequential(
@@ -135,10 +147,10 @@ class Ch_Pos_GCL(nn.Module):
         nprod = vec2product(edges, nvecs)   # (n_edges, *)
 
         if edge_attr is None:
-            chem = torch.cat([h[row], h[col], node_attr[row], node_attr[col]], dim=1)
+            chem = torch.cat([h[col], node_attr[col]], dim=1)
             pos = torch.cat([nprod, radial], dim=1)
         else:
-            chem = torch.cat([h[row], h[col], node_attr[row], node_attr[col], edge_attr], dim=1)
+            chem = torch.cat([h[col], node_attr[col], edge_attr], dim=1)
             pos = torch.cat([nprod, radial, edge_attr], dim=1)
 
         chem = self.ch_edge_mlp(chem)
@@ -239,7 +251,7 @@ class Transformer_GCL(nn.Module):
 
         self.linear_out = nn.Sequential(
             nn.Linear(hidden_nf, hidden_nf),
-            nn.GELU(),
+            nn.SiLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_nf, output_nf)
         )
@@ -311,6 +323,186 @@ class TPCL(nn.Module):
         return out
 
 
+class Cosine_Cut_Block(nn.Module):
+    def __init__(self, r_cut=1.):
+        super(Cosine_Cut_Block, self).__init__()
+
+        self.r_cut = r_cut
+
+    def forward(self, radial):
+        """
+        :param radial: ||r_ij||, (N, 1)
+        """
+        out = torch.zeros_like(radial)
+        within_cutoff = radial < self.r_cut
+        out[within_cutoff] = 0.5 * (torch.cos(np.pi * radial[within_cutoff] / self.r_cut) + 1)
+
+        return out
+
+
+class Polarizable_Interaction_MP_Block(nn.Module):
+    def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, rbf_dim=20,
+                 r_cut=1., act_fn=nn.SiLU(), dropout=0.1):
+        super(Polarizable_Interaction_MP_Block, self).__init__()
+
+        self.hidden_nf = hidden_nf
+
+        input_edges = input_nf + edges_in_d    # (hj, eij)
+
+        self.node_conv = nn.Sequential(
+            nn.Linear(input_edges, hidden_nf),
+            act_fn,
+            nn.Dropout(dropout),
+            nn.Linear(hidden_nf, 3 * hidden_nf)
+        )
+
+        self.rbf_conv = nn.Sequential(
+            nn.Linear(rbf_dim, 3 * hidden_nf),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, node_feat, vec_feat, edges, edge_attr, coord_diff, rbf):
+        row, col = edges
+        num_edges = edges.shape[1]
+        num_nodes = node_feat.shape[0]
+
+        if edge_attr is None:
+            H = node_feat[col]
+        else:
+            H = torch.cat([node_feat[col], edge_attr], dim=1)
+
+        node_out = self.node_conv(H)    # (n_edges, 3 * hidden_nf)
+        rbf_out = self.rbf_conv(rbf)    # (n_edges, 3 * hidden_nf)
+
+        mix_out = node_out * rbf_out
+
+        mes_vec = vec_feat[col] * mix_out[:, :self.hidden_nf, None] + \
+            coord_diff.unsqueeze(1).repeat(1, self.hidden_nf, 1) * mix_out[:, 2*self.hidden_nf:, None] # (n_edges, hidden_nf, 3)
+        mes_node = mix_out[:, self.hidden_nf: 2*self.hidden_nf] # (n_edges, hidden_nf)
+
+        mes_vec = unsorted_segment_mean(mes_vec.reshape(num_edges, -1), row,
+                                        num_segments=num_nodes).reshape(num_nodes, -1, 3) # (N, hidden_nf, 3)
+        mes_node = unsorted_segment_mean(mes_node, row, num_segments=num_nodes) # (N, hidden_nf)
+
+        return mes_node, mes_vec
+
+
+class Polarizable_Interaction_Update_Block(nn.Module):
+    def __init__(self, input_nf, output_nf, hidden_nf, act_fn=nn.SiLU(), dropout=0.1):
+        super(Polarizable_Interaction_Update_Block, self).__init__()
+
+        self.hidden_nf = hidden_nf
+
+        self.vec_u_fc = nn.Sequential(
+            nn.Linear(input_nf, hidden_nf, bias=False),
+            nn.Dropout(dropout)
+        )
+
+        self.vec_v_fc = nn.Sequential(
+            nn.Linear(input_nf, hidden_nf, bias=False),
+            nn.Dropout(dropout)
+        )
+
+        self.node_conv = nn.Sequential(
+            nn.Linear(input_nf + hidden_nf, hidden_nf),
+            act_fn,
+            nn.Dropout(dropout),
+            nn.Linear(hidden_nf, 3 * hidden_nf)
+        )
+
+    def forward(self, node_feat, vec_feat):
+        vec_u_update = self.vec_u_fc(vec_feat.transpose(1, 2)).transpose(1, 2)  # (N, hidden_nf, 3)
+        vec_v_update = self.vec_v_fc(vec_feat.transpose(1, 2)).transpose(1, 2)  # (N, hidden_nf, 3)
+
+        uv_prod = (vec_u_update[:, :, None, :] @ vec_v_update[:, :, :, None]).squeeze()  # (N, hidden_nf)
+        v_norm = torch.norm(vec_v_update, dim=-1)   # (N, hidden_nf)
+
+        H = torch.cat([node_feat, v_norm], dim=1)   # (N, input_nf + hidden_nf)
+        node_out = self.node_conv(H)    # (N, 3 * hidden_nf)
+
+        vec_update = vec_u_update * node_out[:, :self.hidden_nf, None]  # (N, hidden_nf, 3)
+        node_update = uv_prod * node_out[:, self.hidden_nf: 2*self.hidden_nf] + \
+                      node_out[:, 2*self.hidden_nf:] # (N, hidden_nf)
+
+        return node_update, vec_update
+
+
+class PINN(nn.Module):
+    def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, rbf_dim=20,
+                 r_cut=1., act_fn=nn.SiLU(), dropout=0.1):
+        super(PINN, self).__init__()
+
+        self.hidden_nf = hidden_nf
+
+        self.PI_MP_Block = Polarizable_Interaction_MP_Block(
+            input_nf, output_nf, hidden_nf, edges_in_d, rbf_dim=rbf_dim,
+            r_cut=r_cut, act_fn=act_fn, dropout=dropout
+        )
+
+        self.PI_update_Block = Polarizable_Interaction_Update_Block(
+            input_nf, output_nf, hidden_nf, act_fn=act_fn, dropout=dropout
+        )
+
+    def forward(self, node_feat, vec_feat, edges, edge_attr, coord_diff, rbf):
+        # message passing
+        m_node_agg, m_vec_agg = self.PI_MP_Block(
+            node_feat, vec_feat, edges, edge_attr, coord_diff, rbf
+        )
+
+        # residual
+        node_feat = node_feat + m_node_agg
+        vec_feat = vec_feat + m_vec_agg
+
+        # update
+        node_update, vec_update = self.PI_update_Block(
+            node_feat, vec_feat
+        )
+
+        # residual
+        node_feat = node_feat + node_update
+        vec_feat = vec_feat + vec_update
+
+        return node_feat, vec_feat
+
+
+class Gated_Equivariant_Block(nn.Module):
+    def __init__(self, input_nf, output_nf, hidden_nf, act_fn=nn.SiLU(), dropout=0.1):
+        super(Gated_Equivariant_Block, self).__init__()
+
+        self.hidden_nf = hidden_nf
+
+        self.vec_u_fc = nn.Sequential(
+            nn.Linear(input_nf, hidden_nf, bias=False),
+            nn.Dropout(dropout)
+        )
+
+        self.vec_v_fc = nn.Sequential(
+            nn.Linear(input_nf, hidden_nf, bias=False),
+            nn.Dropout(dropout)
+        )
+
+        self.node_conv = nn.Sequential(
+            nn.Linear(input_nf + hidden_nf, hidden_nf),
+            act_fn,
+            nn.Dropout(dropout),
+            nn.Linear(hidden_nf, 2 * hidden_nf)
+        )
+
+    def forward(self, node_feat, vec_feat):
+        vec_u = self.vec_u_fc(vec_feat.transpose(1, 2)).transpose(1, 2)  # (N, hidden_nf, 3)
+        vec_v = self.vec_v_fc(vec_feat.transpose(1, 2)).transpose(1, 2)  # (N, hidden_nf, 3)
+
+        v_norm = torch.norm(vec_v, dim=-1)  # (N, hidden_nf)
+        H = torch.cat([node_feat, v_norm], dim=1)  # (N, input_nf + hidden_nf)
+
+        node_out = self.node_conv(H)  # (N, 2 * hidden_nf)
+
+        vec_feat_out = vec_u * node_out[:, :self.hidden_nf, None]
+        node_feat_out = node_out[:, self.hidden_nf:]
+
+        return node_feat_out, vec_feat_out
+
+
 ### Pairwise energy && Triangular self-Attention EGNN
 class PTA_EGNN(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d,
@@ -318,8 +510,6 @@ class PTA_EGNN(nn.Module):
         super(PTA_EGNN, self).__init__()
 
         self.hidden_nf = hidden_nf
-
-        self.dropout = nn.Dropout(dropout)
 
         self.ch_pos_gcl = Ch_Pos_GCL(
             input_nf, hidden_nf, hidden_nf, edges_in_d,
@@ -334,18 +524,21 @@ class PTA_EGNN(nn.Module):
         self.phi_u = nn.Sequential(
             nn.Linear(hidden_nf, hidden_nf),
             act_fn,
+            nn.Dropout(dropout),
             nn.Linear(hidden_nf, 1)
         )
 
         self.phi_x = nn.Sequential(
             nn.Linear(hidden_nf, hidden_nf),
             act_fn,
+            nn.Dropout(dropout),
             nn.Linear(hidden_nf, 1)
         )
 
         self.phi_h = nn.Sequential(
             nn.Linear(hidden_nf * 2 + input_nf, hidden_nf),
             act_fn,
+            nn.Dropout(dropout),
             nn.Linear(hidden_nf, hidden_nf)
         )
 

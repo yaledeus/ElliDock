@@ -3,7 +3,7 @@ from scipy.spatial.distance import cdist
 
 import sys
 sys.path.append('..')
-from data.geometry import kabsch_numpy
+from utils.geometry import kabsch_numpy
 
 
 def compute_crmsd(X, Y):
