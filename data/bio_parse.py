@@ -477,9 +477,10 @@ class SabDabComplex:
         antigen_ca_coord = self.antigen_coord()[:, CA_INDEX]
         abag_dist = cdist(antibody_ca_coord, antigen_ca_coord)
         ab_idx, ag_idx = np.where(abag_dist < threshold)
-        ab_keypoints = 0.5 * (antibody_ca_coord[ab_idx] + antigen_ca_coord[np.argmin(abag_dist[ab_idx], axis=1)])
-        ag_keypoints = 0.5 * (antigen_ca_coord[ag_idx] + antibody_ca_coord[np.argmin(abag_dist.T[ag_idx], axis=1)])
-        keypoints = np.concatenate((ab_keypoints, ag_keypoints), axis=0)
+        # ab_keypoints = 0.5 * (antibody_ca_coord[ab_idx] + antigen_ca_coord[np.argmin(abag_dist[ab_idx], axis=1)])
+        # ag_keypoints = 0.5 * (antigen_ca_coord[ag_idx] + antibody_ca_coord[np.argmin(abag_dist.T[ag_idx], axis=1)])
+        # keypoints = np.concatenate((ab_keypoints, ag_keypoints), axis=0)
+        keypoints = 0.5 * (antibody_ca_coord[ab_idx] + antigen_ca_coord[ag_idx])
         return keypoints
 
 
@@ -564,9 +565,10 @@ class DBComplex:
         ligand_ca_coord = self.ligand_coord()[:, CA_INDEX]
         abag_dist = cdist(receptor_ca_coord, ligand_ca_coord)
         ab_idx, ag_idx = np.where(abag_dist < threshold)
-        ab_keypoints = 0.5 * (receptor_ca_coord[ab_idx] + ligand_ca_coord[np.argmin(abag_dist[ab_idx], axis=1)])
-        ag_keypoints = 0.5 * (ligand_ca_coord[ag_idx] + receptor_ca_coord[np.argmin(abag_dist.T[ag_idx], axis=1)])
-        keypoints = np.concatenate((ab_keypoints, ag_keypoints), axis=0)
+        # ab_keypoints = 0.5 * (receptor_ca_coord[ab_idx] + ligand_ca_coord[np.argmin(abag_dist[ab_idx], axis=1)])
+        # ag_keypoints = 0.5 * (ligand_ca_coord[ag_idx] + receptor_ca_coord[np.argmin(abag_dist.T[ag_idx], axis=1)])
+        # keypoints = np.concatenate((ab_keypoints, ag_keypoints), axis=0)
+        keypoints = 0.5 * (receptor_ca_coord[ab_idx] + ligand_ca_coord[ag_idx])
         return keypoints
 
 
@@ -647,9 +649,10 @@ class DIPSComplex:
         ligand_ca_coord = self.ligand_coord()[:, CA_INDEX]
         abag_dist = cdist(receptor_ca_coord, ligand_ca_coord)
         ab_idx, ag_idx = np.where(abag_dist < threshold)
-        ab_keypoints = 0.5 * (receptor_ca_coord[ab_idx] + ligand_ca_coord[np.argmin(abag_dist[ab_idx], axis=1)])
-        ag_keypoints = 0.5 * (ligand_ca_coord[ag_idx] + receptor_ca_coord[np.argmin(abag_dist.T[ag_idx], axis=1)])
-        keypoints = np.concatenate((ab_keypoints, ag_keypoints), axis=0)
+        # ab_keypoints = 0.5 * (receptor_ca_coord[ab_idx] + ligand_ca_coord[np.argmin(abag_dist[ab_idx], axis=1)])
+        # ag_keypoints = 0.5 * (ligand_ca_coord[ag_idx] + receptor_ca_coord[np.argmin(abag_dist.T[ag_idx], axis=1)])
+        # keypoints = np.concatenate((ab_keypoints, ag_keypoints), axis=0)
+        keypoints = 0.5 * (receptor_ca_coord[ab_idx] + ligand_ca_coord[ag_idx])
         return keypoints
 
 

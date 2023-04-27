@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
-from .bio_parse import N_INDEX, CA_INDEX, C_INDEX
+from bio_parse import N_INDEX, CA_INDEX, C_INDEX
 
 
 def dihedral_from_four_points(p0, p1, p2, p3):

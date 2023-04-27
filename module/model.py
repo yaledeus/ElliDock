@@ -166,10 +166,11 @@ class ExpDock(nn.Module):
             del D2  # free memory
             torch.cuda.empty_cache()
             # compute dock loss
-            _, R1, t1 = quadratic_surface_fit(Y1)
-            _, R2, t2 = quadratic_surface_fit(Y2)
-            R = R1 @ R2.T
-            t = (t1 - t2) @ R2.T
+            # _, R1, t1 = quadratic_surface_fit(Y1)
+            # _, R2, t2 = quadratic_surface_fit(Y2)
+            # R = R1 @ R2.T
+            # t = (t1 - t2) @ R2.T
+            _, R, t = kabsch_torch(Y1, Y2)
             ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
             dock_loss += F.mse_loss((trans[i] - ct) @ rot[i].T + t + ct, torch.zeros(3).to(device))
@@ -274,10 +275,11 @@ class ExpDock(nn.Module):
                   for j in range(self.n_keypoints)]
             Y1 = torch.cat(Y1, dim=0)
             Y2 = torch.cat(Y2, dim=0)
-            _, R1, t1 = quadratic_surface_fit(Y1)
-            _, R2, t2 = quadratic_surface_fit(Y2)
-            R = R1 @ R2.T
-            t = (t1 - t2) @ R2.T
+            # _, R1, t1 = quadratic_surface_fit(Y1)
+            # _, R2, t2 = quadratic_surface_fit(Y2)
+            # R = R1 @ R2.T
+            # t = (t1 - t2) @ R2.T
+            _, R, t = kabsch_torch(Y1, Y2)
             init_X[ab_idx] = init_X[ab_idx] @ R + t
             dock_trans_list.append(self.normalizer.dock_transformation(center, i, R, t))
 
