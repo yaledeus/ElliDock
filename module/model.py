@@ -13,12 +13,13 @@ from .gnn import PINN, Gated_Equivariant_Block, RBF, coord2radial
 
 
 class ExpDock(nn.Module):
-    def __init__(self, embed_size, hidden_size, k_neighbors=9, n_layers=4,
+    def __init__(self, embed_size, hidden_size, k_neighbors=9, n_layers=4, n_keypoints=12,
                  rbf_dim=20, r_cut=1., dropout=0.1, mean=None, std=None) -> None:
         super(ExpDock, self).__init__()
         self.embed_size = embed_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
+        self.n_keypoints = n_keypoints
 
         self.rbf_dim = rbf_dim
         self.r_cut = r_cut
@@ -50,13 +51,14 @@ class ExpDock(nn.Module):
                 nn.Linear(self.hidden_size, self.hidden_size)
                 )
             )
+            self.register_parameter(f'inter_att_{i}', nn.Parameter(torch.rand(hidden_size, hidden_size)))
 
         self.gated_equiv_block = Gated_Equivariant_Block(
             hidden_size, hidden_size, hidden_size, act_fn=nn.SiLU(), dropout=dropout
         )
 
         self.final_conv = nn.Sequential(
-            nn.Linear(self.hidden_size, 2 * 4 + 1, bias=False),
+            nn.Linear(self.hidden_size, self.n_keypoints, bias=False),
             nn.Dropout(dropout)
         )
 
@@ -121,20 +123,23 @@ class ExpDock(nn.Module):
             for b_ind in range(bs):
                 receptor_idx = torch.logical_and(Seg == 0, bid == b_ind)
                 ligand_idx = torch.logical_and(Seg == 1, bid == b_ind)
-                node_feat[receptor_idx] = intra_node_feat[receptor_idx] + self._modules[f'inter_act_{i}'](
-                    intra_node_feat[receptor_idx] * F.softmax((intra_node_feat[receptor_idx] @
-                                                         intra_node_feat[ligand_idx].T).mean(dim=1), dim=0)
-                    .unsqueeze(1)
-                )
-                node_feat[ligand_idx] = intra_node_feat[ligand_idx] + self._modules[f'inter_act_{i}'](
-                    intra_node_feat[ligand_idx] * F.softmax((intra_node_feat[ligand_idx] @
-                                                         intra_node_feat[receptor_idx].T).mean(dim=1), dim=0)
-                    .unsqueeze(1)
-                )
+                node_feat[receptor_idx] = intra_node_feat[receptor_idx] + \
+                                          torch.sigmoid((intra_node_feat[receptor_idx] @
+                                                        self._parameters[f'inter_att_{i}'] @
+                                                        intra_node_feat[ligand_idx].T)
+                                                        .mean(dim=1)).unsqueeze(1) * \
+                                          self._modules[f'inter_act_{i}'](intra_node_feat[receptor_idx])
+                node_feat[ligand_idx] = intra_node_feat[ligand_idx] + \
+                                        torch.sigmoid((intra_node_feat[ligand_idx] @
+                                                        self._parameters[f'inter_att_{i}'] @
+                                                        intra_node_feat[receptor_idx].T)
+                                                      .mean(dim=1)).unsqueeze(1) * \
+                                        self._modules[f'inter_act_{i}'](intra_node_feat[ligand_idx])
 
         node_feat, vec_feat = self.gated_equiv_block(node_feat, vec_feat)
 
-        # dock loss & rmsd loss & stable loss & match loss
+        # ot loss && dock loss & rmsd loss & stable loss & match loss
+        ot_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
         stable_loss = 0.
@@ -146,57 +151,36 @@ class ExpDock(nn.Module):
             re_center = X[receptor_idx].mean(dim=0) # (3,)
             li_center = X[ligand_idx].mean(dim=0)   # (3,)
 
-            re_pred_vec = self.final_conv(
+            Y1 = self.final_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0)   # (9, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scaling_factor   # (K, 3)
 
-            li_pred_vec = self.final_conv(
+            Y2 = self.final_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0)   # (9, 3)
-
-            # second-order tensor, (3, 3)
-            pred_re_A = torch.kron(re_pred_vec[0][:, None], re_pred_vec[1][None, :]) + \
-                        torch.kron(re_pred_vec[2][None, :], re_pred_vec[3][:, None]) + \
-                        torch.kron(re_pred_vec[4][:, None], re_pred_vec[5][None, :]) + \
-                        torch.kron(re_pred_vec[6][None, :], re_pred_vec[7][:, None])
-            pred_re_A = pred_re_A / self.scaling_factor**2
-            # first-order tensor, (3,)
-            pred_re_b = re_pred_vec[8] / self.scaling_factor
-
-            pred_li_A = torch.kron(li_pred_vec[0][:, None], li_pred_vec[1][None, :]) + \
-                        torch.kron(li_pred_vec[2][None, :], li_pred_vec[3][:, None]) + \
-                        torch.kron(li_pred_vec[4][:, None], li_pred_vec[5][None, :]) + \
-                        torch.kron(li_pred_vec[6][None, :], li_pred_vec[7][:, None])
-            pred_li_A = pred_li_A / self.scaling_factor**2
-
-            pred_li_b = li_pred_vec[8] / self.scaling_factor
-
-            re_std_params, _, _ = standard_quadratic_transform(pred_re_A, pred_re_b, scale=self.quad_const)
-            li_std_params, _, _ = standard_quadratic_transform(pred_li_A, pred_li_b, scale=self.quad_const)
-
-            # compute stable loss
-            stable_loss += F.smooth_l1_loss(re_std_params, li_std_params)
+            ).transpose(1, 2).sum(dim=0) / self.scaling_factor   # (K, 3)
 
             # SO(3) => E(3)
-            pred_re_A_e3, pred_re_b_e3 = quadratic_O3_to_E3(pred_re_A, pred_re_b, scale=self.quad_const, t=re_center)
-            pred_li_A_e3, pred_li_b_e3 = quadratic_O3_to_E3(pred_li_A, pred_li_b, scale=self.quad_const, t=li_center)
+            Y1 = Y1 + re_center
+            Y2 = Y2 + li_center
 
-            stable_loss += F.mse_loss(
-                ((trans_keypoints[k_bid == i] @ pred_re_A_e3) * trans_keypoints[k_bid == i])
-                .sum(dim=1) + trans_keypoints[k_bid == i] @ pred_re_b_e3 - self.quad_const,
-                torch.zeros(keypoints[k_bid == i].shape[0]).to(device)
-            )
-            stable_loss += F.mse_loss(
-                ((keypoints[k_bid == i] @ pred_li_A_e3) * keypoints[k_bid == i])
-                .sum(dim=1) + keypoints[k_bid == i] @ pred_li_b_e3 - self.quad_const,
-                torch.zeros(keypoints[k_bid == i].shape[0]).to(device)
-            )
+            # compute stable loss
+            stable_loss += F.softplus(-max_triangle_area(Y1))
+            stable_loss += F.softplus(-max_triangle_area(Y2))
 
-            _, R1, t1 = standard_quadratic_transform(pred_re_A_e3, pred_re_b_e3, scale=self.quad_const)
-            _, R2, t2 = standard_quadratic_transform(pred_li_A_e3, pred_li_b_e3, scale=self.quad_const)
+            # compute ot loss
+            P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
+            D1 = torch.cdist(Y1, P1)  # (K, S)
+            min_indices_1 = torch.argmin(D1, dim=1)  # (K,)
+            del D1  # free memory
+            ot_loss += F.mse_loss(Y1, P1[min_indices_1])
+            D2 = torch.cdist(Y2, P2)  # (K, S)
+            min_indices_2 = torch.argmin(D2, dim=1)  # (K,)
+            ot_loss += F.mse_loss(Y2, P2[min_indices_2])
+            del D2  # free memory
+            torch.cuda.empty_cache()
 
-            R = R1 @ R2.T
-            t = (t1 - t2) @ R2.T
+            # compute dock loss
+            _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
 
             ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
@@ -207,13 +191,14 @@ class ExpDock(nn.Module):
             rmsd_loss += F.mse_loss(X1_aligned, ori_X[receptor_idx])
 
         # normalize
+        ot_loss /= bs
         dock_loss /= bs
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = dock_loss + stable_loss + 0.2 * rmsd_loss
+        loss = ot_loss + dock_loss + stable_loss
 
-        return loss, (dock_loss, stable_loss, rmsd_loss)
+        return loss, (ot_loss, dock_loss, stable_loss, rmsd_loss)
 
     def dock(self, X, S, RP, Seg, center, bid, **kwargs):
         device = X.device
@@ -244,16 +229,18 @@ class ExpDock(nn.Module):
             for b_ind in range(bs):
                 receptor_idx = torch.logical_and(Seg == 0, bid == b_ind)
                 ligand_idx = torch.logical_and(Seg == 1, bid == b_ind)
-                node_feat[receptor_idx] = intra_node_feat[receptor_idx] + self._modules[f'inter_act_{i}'](
-                    intra_node_feat[receptor_idx] * F.softmax((intra_node_feat[receptor_idx] @
-                                                               intra_node_feat[ligand_idx].T).mean(dim=1), dim=0)
-                    .unsqueeze(1)
-                )
-                node_feat[ligand_idx] = intra_node_feat[ligand_idx] + self._modules[f'inter_act_{i}'](
-                    intra_node_feat[ligand_idx] * F.softmax((intra_node_feat[ligand_idx] @
-                                                             intra_node_feat[receptor_idx].T).mean(dim=1), dim=0)
-                    .unsqueeze(1)
-                )
+                node_feat[receptor_idx] = intra_node_feat[receptor_idx] + \
+                                          torch.sigmoid((intra_node_feat[receptor_idx] @
+                                                         self._parameters[f'inter_att_{i}'] @
+                                                         intra_node_feat[ligand_idx].T)
+                                                        .mean(dim=1)).unsqueeze(1) * \
+                                          self._modules[f'inter_act_{i}'](intra_node_feat[receptor_idx])
+                node_feat[ligand_idx] = intra_node_feat[ligand_idx] + \
+                                        torch.sigmoid((intra_node_feat[ligand_idx] @
+                                                       self._parameters[f'inter_att_{i}'] @
+                                                       intra_node_feat[receptor_idx].T)
+                                                      .mean(dim=1)).unsqueeze(1) * \
+                                        self._modules[f'inter_act_{i}'](intra_node_feat[ligand_idx])
 
         node_feat, vec_feat = self.gated_equiv_block(node_feat, vec_feat)
 
@@ -266,40 +253,20 @@ class ExpDock(nn.Module):
             re_center = X[receptor_idx].mean(dim=0)  # (3,)
             li_center = X[ligand_idx].mean(dim=0)  # (3,)
 
-            re_pred_vec = self.final_conv(
+            Y1 = self.final_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0)  # (9, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scaling_factor  # (K, 3)
 
-            li_pred_vec = self.final_conv(
+            Y2 = self.final_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0)  # (9, 3)
-
-            # second-order tensor, (3, 3)
-            pred_re_A = torch.kron(re_pred_vec[0][:, None], re_pred_vec[1][None, :]) + \
-                        torch.kron(re_pred_vec[2][None, :], re_pred_vec[3][:, None]) + \
-                        torch.kron(re_pred_vec[4][:, None], re_pred_vec[5][None, :]) + \
-                        torch.kron(re_pred_vec[6][None, :], re_pred_vec[7][:, None])
-            pred_re_A = pred_re_A / self.scaling_factor ** 2
-            # first-order tensor, (3,)
-            pred_re_b = re_pred_vec[8] / self.scaling_factor
-
-            pred_li_A = torch.kron(li_pred_vec[0][:, None], li_pred_vec[1][None, :]) + \
-                        torch.kron(li_pred_vec[2][None, :], li_pred_vec[3][:, None]) + \
-                        torch.kron(li_pred_vec[4][:, None], li_pred_vec[5][None, :]) + \
-                        torch.kron(li_pred_vec[6][None, :], li_pred_vec[7][:, None])
-            pred_li_A = pred_li_A / self.scaling_factor ** 2
-
-            pred_li_b = li_pred_vec[8] / self.scaling_factor
+            ).transpose(1, 2).sum(dim=0) / self.scaling_factor  # (K, 3)
 
             # SO(3) => E(3)
-            pred_re_A_e3, pred_re_b_e3 = quadratic_O3_to_E3(pred_re_A, pred_re_b, scale=self.quad_const, t=re_center)
-            pred_li_A_e3, pred_li_b_e3 = quadratic_O3_to_E3(pred_li_A, pred_li_b, scale=self.quad_const, t=li_center)
+            Y1 = Y1 + re_center
+            Y2 = Y2 + li_center
 
-            _, R1, t1 = standard_quadratic_transform(pred_re_A_e3, pred_re_b_e3, scale=self.quad_const)
-            _, R2, t2 = standard_quadratic_transform(pred_li_A_e3, pred_li_b_e3, scale=self.quad_const)
-
-            R = R1 @ R2.T
-            t = (t1 - t2) @ R2.T
+            # compute dock loss
+            _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
 
             X[receptor_idx] = X[receptor_idx] @ R + t
             dock_trans_list.append(self.normalizer.dock_transformation(center, i, R, t))
