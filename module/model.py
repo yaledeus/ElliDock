@@ -24,7 +24,7 @@ class ExpDock(nn.Module):
         self.r_cut = r_cut
 
         self.quad_const = 1.
-        self.scaling_factor = 0.1
+        self.scaling_factor = 0.08
 
         node_in_d, edge_in_d = ComplexGraph.feature_dim(embed_size)
 
@@ -181,12 +181,12 @@ class ExpDock(nn.Module):
             pred_re_A_e3, pred_re_b_e3 = quadratic_O3_to_E3(pred_re_A, pred_re_b, scale=self.quad_const, t=re_center)
             pred_li_A_e3, pred_li_b_e3 = quadratic_O3_to_E3(pred_li_A, pred_li_b, scale=self.quad_const, t=li_center)
 
-            stable_loss += F.smooth_l1_loss(
+            stable_loss += F.mse_loss(
                 ((trans_keypoints[k_bid == i] @ pred_re_A_e3) * trans_keypoints[k_bid == i])
                 .sum(dim=1) + trans_keypoints[k_bid == i] @ pred_re_b_e3 - self.quad_const,
                 torch.zeros(keypoints[k_bid == i].shape[0]).to(device)
             )
-            stable_loss += F.smooth_l1_loss(
+            stable_loss += F.mse_loss(
                 ((keypoints[k_bid == i] @ pred_li_A_e3) * keypoints[k_bid == i])
                 .sum(dim=1) + keypoints[k_bid == i] @ pred_li_b_e3 - self.quad_const,
                 torch.zeros(keypoints[k_bid == i].shape[0]).to(device)
@@ -200,7 +200,7 @@ class ExpDock(nn.Module):
 
             ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
-            dock_loss += F.mse_loss((trans[i] - ct) @ rot[i].T + t + ct, torch.zeros(3).to(device))
+            dock_loss += F.mse_loss((trans[i] - ct) @ R + t + ct, torch.zeros(3).to(device))
 
             # compute rmsd loss
             X1_aligned = X[receptor_idx] @ R + t   # (N, 3)
@@ -211,7 +211,7 @@ class ExpDock(nn.Module):
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = 0.2 * dock_loss + stable_loss + 0.2 * rmsd_loss
+        loss = dock_loss + stable_loss + 0.2 * rmsd_loss
 
         return loss, (dock_loss, stable_loss, rmsd_loss)
 

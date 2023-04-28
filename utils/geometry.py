@@ -293,7 +293,12 @@ def quadratic_surface_fit(coord):
     b = torch.ones_like(X).squeeze()         # (N,)
     params = torch.linalg.pinv(A.T @ A) @ A.T @ b   # (9,)
 
-    return params
+    quad_coef = torch.tensor([[params[0], 0.5 * params[3], 0.5 * params[5]],
+                              [0.5 * params[3], params[1], 0.5 * params[4]],
+                              [0.5 * params[5], 0.5 * params[4], params[2]]], device=device)
+    prim_coef = params[6:]
+
+    return quad_coef, prim_coef
 
 
 def standard_quadratic_transform(A, b, scale=1.):
@@ -308,7 +313,7 @@ def standard_quadratic_transform(A, b, scale=1.):
     L, Q = torch.linalg.eigh(quadratic_mat) # L: (3,), Q: (3, 3)
 
     # primary coefficient after rotation
-    primary = Q.T @ b
+    primary = 0.5 * Q.T @ b
     non_zero = L.abs() > threshold
     # translate vector
     t = torch.zeros_like(L)
@@ -332,9 +337,9 @@ def quadratic_O3_to_E3(A, b, scale, t):
     :param t: translate vector, (3,)
     :return: A', b' after translate
     """
-    cons = scale - t @ A @ t - t @ b
+    cons = scale + t @ b - t @ A @ t
     A_prime = A * scale / cons
-    b_prime = (b + (A + A.T) @ t) * scale / cons
+    b_prime = (b - (A + A.T) @ t) * scale / cons
 
     return A_prime, b_prime
 
