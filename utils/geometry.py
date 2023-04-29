@@ -279,7 +279,7 @@ def Gaussian_surface_fit(coord):
 def quadratic_surface_fit(coord):
     """
     :param coord: coordinates in R3 to be fitted, (N, 3)
-    :return: coefficient, (9,), Ax^2 + By^2 + Cz^2 + Dxy + Eyz + Fzx + Gx + Hy + Iz = 1
+    :return: A, b satisfy <Ax, x> + <b,x> = 1
     """
     device = coord.device
 
@@ -290,7 +290,7 @@ def quadratic_surface_fit(coord):
     Z = Z.unsqueeze(1)
 
     A = torch.cat([X**2, Y**2, Z**2, X*Y, Y*Z, Z*X, X, Y, Z], dim=1)    # (N, 9)
-    b = torch.ones_like(X).squeeze()         # (N,)
+    b = torch.ones_like(X).squeeze()                # (N,)
     params = torch.linalg.pinv(A.T @ A) @ A.T @ b   # (9,)
 
     quad_coef = torch.tensor([[params[0], 0.5 * params[3], 0.5 * params[5]],
@@ -307,7 +307,7 @@ def standard_quadratic_transform(A, b, scale=1.):
     :return: standard coefficient, (6,), Ax^2 + By^2 + Cz^2 + Dx + Ey + Fz = scale
              Q, (3, 3), rotation matrix, t, (3,), translate vector
     """
-    threshold = 1e-2    # |eigenvalues| < threshold are considered as zero
+    threshold = 1e-2    # values < threshold are considered as zero
 
     quadratic_mat = 0.5 * (A + A.T)         # (3, 3), quadratic coefficient (symmetric) matrix
     L, Q = torch.linalg.eigh(quadratic_mat) # L: (3,), Q: (3, 3)
@@ -342,6 +342,58 @@ def quadratic_O3_to_E3(A, b, scale, t):
     b_prime = (b - (A + A.T) @ t) * scale / cons
 
     return A_prime, b_prime
+
+
+def quadratic_mean_importance_sampling(points, max_num_mesh):
+    device = points.device
+    num_points = points.shape[0]
+
+    if num_points >= max_num_mesh:
+        return points
+    else:
+        A, b = quadratic_surface_fit(points)
+        p_x2, p_y2, p_z2 = A[0, 0], A[1, 1], A[2, 2]
+        p_xy, p_yz, p_zx = 2 * A[0, 1], 2 * A[1, 2], 2 * A[2, 0]
+        p_x, p_y, p_z = b[0], b[1], b[2]
+        x_min, x_max = torch.min(points[:, 0]), torch.max(points[:, 0])
+        y_min, y_max = torch.min(points[:, 1]), torch.max(points[:, 1])
+        z_min, z_max = torch.min(points[:, 2]), torch.max(points[:, 2])
+        mesh_points = [points[i].unsqueeze(0) for i in range(num_points)]
+        n = num_points
+        while n < max_num_mesh:
+            sampled_x = x_min + torch.rand(1).to(device) * (x_max - x_min)
+            sampled_y = y_min + torch.rand(1).to(device) * (y_max - y_min)
+            prim_coef = p_yz * sampled_y + p_zx * sampled_x + p_z
+            const_coef = p_x2 * sampled_x**2 + p_y2 * sampled_y**2 + p_xy * sampled_x * sampled_y + \
+                p_x * sampled_x + p_y * sampled_y - 1
+            if prim_coef**2 - 4 * p_z2 * const_coef >= 0:
+                mesh_points.append(torch.tensor([sampled_x, sampled_y, ((-prim_coef +
+                                                  (prim_coef**2 - 4 * p_z2 * const_coef).sqrt()
+                                                  ) / (2 * p_z2)).clip(min=z_min, max=z_max)],
+                                                device=device).unsqueeze(0))
+                mesh_points.append(torch.tensor([sampled_x, sampled_y, ((-prim_coef -
+                                                  (prim_coef ** 2 - 4 * p_z2 * const_coef).sqrt()
+                                                  ) / (2 * p_z2)).clip(min=z_min, max=z_max)],
+                                                device=device).unsqueeze(0))
+            else:
+                mesh_points.append(torch.tensor([sampled_x, sampled_y, z_min], device=device).unsqueeze(0))
+                mesh_points.append(torch.tensor([sampled_x, sampled_y, z_max], device=device).unsqueeze(0))
+
+            n += 2
+
+        mesh_points = torch.cat(mesh_points, dim=0)
+
+        return mesh_points
+
+"""
+### quadratic mean importance sampling test
+N = 12
+coord = torch.randn(12, 3)
+A, b = quadratic_surface_fit(coord)
+mesh_points = quadratic_mean_importance_sampling(coord)
+print(f"mesh_points: {mesh_points}")
+print(f"validate fitness: {(mesh_points @ A * mesh_points).sum(dim=1) + mesh_points @ b - 1}")
+"""
 
 
 def max_triangle_area(points):

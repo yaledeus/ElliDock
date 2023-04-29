@@ -25,7 +25,7 @@ class ExpDock(nn.Module):
         self.r_cut = r_cut
 
         self.quad_const = 1.
-        self.scaling_factor = 0.08
+        self.max_num_mesh = 50
 
         node_in_d, edge_in_d = ComplexGraph.feature_dim(embed_size)
 
@@ -55,6 +55,13 @@ class ExpDock(nn.Module):
 
         self.gated_equiv_block = Gated_Equivariant_Block(
             hidden_size, hidden_size, hidden_size, act_fn=nn.SiLU(), dropout=dropout
+        )
+
+        self.scale_block = nn.Sequential(
+            nn.Linear(self.hidden_size + 1, self.hidden_size // 2),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_size // 2, 1)
         )
 
         self.final_conv = nn.Sequential(
@@ -92,8 +99,8 @@ class ExpDock(nn.Module):
         # rotate and translate for antibodies, X' = XR + t
         rot, trans = sample_transformation(bid)
         for i in range(bs):
-            ab_idx = torch.logical_and(Seg == 0, bid == i)
-            X[ab_idx] = X[ab_idx] @ rot[i] + trans[i] * torch.mean(self.normalizer.std)
+            receptor_idx = torch.logical_and(Seg == 0, bid == i)
+            X[receptor_idx] = X[receptor_idx] @ rot[i] + trans[i] * torch.mean(self.normalizer.std)
             trans_keypoints[k_bid == i] = trans_keypoints[k_bid == i] @ rot[i] + trans[i] * torch.mean(
                 self.normalizer.std)
 
@@ -153,19 +160,21 @@ class ExpDock(nn.Module):
 
             Y1 = self.final_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scaling_factor   # (K, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scale_block(
+                torch.cat([torch.norm(vec_feat[receptor_idx], dim=-1),
+                           torch.norm(X[receptor_idx] - re_center, dim=1, keepdim=True)], dim=1)
+            ).mean()   # (K, 3)
 
             Y2 = self.final_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scaling_factor   # (K, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scale_block(
+                torch.cat([torch.norm(vec_feat[ligand_idx], dim=-1),
+                           torch.norm(X[ligand_idx] - li_center, dim=1, keepdim=True)], dim=1)
+            ).mean()   # (K, 3)
 
             # SO(3) => E(3)
             Y1 = Y1 + re_center
             Y2 = Y2 + li_center
-
-            # compute stable loss
-            stable_loss += F.softplus(-max_triangle_area(Y1))
-            stable_loss += F.softplus(-max_triangle_area(Y2))
 
             # compute ot loss
             P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
@@ -183,12 +192,20 @@ class ExpDock(nn.Module):
             _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
 
             ct = self.normalizer.mean / torch.mean(self.normalizer.std)
-            dock_loss += F.mse_loss(rot[i] @ R, torch.eye(3).to(device))
-            dock_loss += F.mse_loss((trans[i] - ct) @ R + t + ct, torch.zeros(3).to(device))
+            dock_loss += F.mse_loss(R, rot[i].T)
+            dock_loss += F.mse_loss(t, (ct - trans[i]) @ rot[i].T - ct)
 
             # compute rmsd loss
             X1_aligned = X[receptor_idx] @ R + t   # (N, 3)
             rmsd_loss += F.mse_loss(X1_aligned, ori_X[receptor_idx])
+
+            # compute stable loss
+            stable_loss += 1. / torch.mean(self.normalizer.std) * \
+                           protein_surface_intersection(X1_aligned * torch.mean(self.normalizer.std),
+                                                        X[ligand_idx] * torch.mean(self.normalizer.std)).clip(min=0.).mean()
+            stable_loss += 1. / torch.mean(self.normalizer.std) * \
+                           protein_surface_intersection(X[ligand_idx] * torch.mean(self.normalizer.std),
+                                                        X1_aligned * torch.mean(self.normalizer.std)).clip(min=0.).mean()
 
         # normalize
         ot_loss /= bs
@@ -255,11 +272,17 @@ class ExpDock(nn.Module):
 
             Y1 = self.final_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scaling_factor  # (K, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scale_block(
+                torch.cat([torch.norm(vec_feat[receptor_idx], dim=-1),
+                           torch.norm(X[receptor_idx] - re_center, dim=1, keepdim=True)], dim=1)
+            ).mean()  # (K, 3)
 
             Y2 = self.final_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scaling_factor  # (K, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scale_block(
+                torch.cat([torch.norm(vec_feat[ligand_idx], dim=-1),
+                           torch.norm(X[ligand_idx] - li_center, dim=1, keepdim=True)], dim=1)
+            ).mean()  # (K, 3)
 
             # SO(3) => E(3)
             Y1 = Y1 + re_center
