@@ -321,10 +321,11 @@ def standard_quadratic_transform(A, b, scale=1.):
     # const coefficient
     cons = scale + torch.sum(primary[non_zero] ** 2 / L[non_zero])
     # quadratic coefficient
-    quad_params = L * scale / cons
+    quad_params = torch.zeros_like(L)
+    quad_params[non_zero] = L[non_zero] * scale / cons.abs()
     # primary coefficient
     prim_params = torch.zeros_like(L)
-    prim_params[~non_zero] = 2 * primary[~non_zero] * scale / cons
+    prim_params[~non_zero] = 2 * primary[~non_zero] * scale / cons.abs()
     # standard coefficient
     std_params = torch.cat([quad_params, prim_params], dim=0)
 
@@ -338,8 +339,8 @@ def quadratic_O3_to_E3(A, b, scale, t):
     :return: A', b' after translate
     """
     cons = scale + t @ b - t @ A @ t
-    A_prime = A * scale / cons
-    b_prime = (b - (A + A.T) @ t) * scale / cons
+    A_prime = A * scale / cons.abs()
+    b_prime = (b - (A + A.T) @ t) * scale / cons.abs()
 
     return A_prime, b_prime
 

@@ -52,7 +52,7 @@ def parse():
     parser.add_argument('--att_heads', type=int, default=4, help='Number of attention heads')
 
     parser.add_argument('--rbf_dim', type=int, default=20, help='RBF embed dimension')
-    parser.add_argument('--r_cut', type=float, default=1., help='radial cutoff threshold')
+    parser.add_argument('--r_cut', type=float, default=3., help='radial cutoff threshold')
 
     return parser.parse_args()
 

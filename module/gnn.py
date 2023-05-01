@@ -342,7 +342,7 @@ class Cosine_Cut_Block(nn.Module):
 
 class Polarizable_Interaction_MP_Block(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, rbf_dim=20,
-                 r_cut=1., act_fn=nn.SiLU(), dropout=0.1):
+                 r_cut=1., att_heads=4, act_fn=nn.SiLU(), dropout=0.1):
         super(Polarizable_Interaction_MP_Block, self).__init__()
 
         self.hidden_nf = hidden_nf
@@ -361,6 +361,10 @@ class Polarizable_Interaction_MP_Block(nn.Module):
             nn.Dropout(dropout)
         )
 
+        self.transformer_gcl = Transformer_GCL(
+            3 * hidden_nf, 3 * hidden_nf, 3 * hidden_nf, att_heads, dropout=dropout
+        )
+
     def forward(self, node_feat, vec_feat, edges, edge_attr, coord_diff, rbf):
         row, col = edges
         num_edges = edges.shape[1]
@@ -373,6 +377,8 @@ class Polarizable_Interaction_MP_Block(nn.Module):
 
         node_out = self.node_conv(H)    # (n_edges, 3 * hidden_nf)
         rbf_out = self.rbf_conv(rbf)    # (n_edges, 3 * hidden_nf)
+
+        node_out = self.transformer_gcl(node_out, edges)    # (n_edges, 3 * hidden_nf)
 
         mix_out = node_out * rbf_out
 
@@ -429,14 +435,14 @@ class Polarizable_Interaction_Update_Block(nn.Module):
 
 class PINN(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, rbf_dim=20,
-                 r_cut=1., act_fn=nn.SiLU(), dropout=0.1):
+                 r_cut=1., att_heads=4, act_fn=nn.SiLU(), dropout=0.1):
         super(PINN, self).__init__()
 
         self.hidden_nf = hidden_nf
 
         self.PI_MP_Block = Polarizable_Interaction_MP_Block(
             input_nf, output_nf, hidden_nf, edges_in_d, rbf_dim=rbf_dim,
-            r_cut=r_cut, act_fn=act_fn, dropout=dropout
+            r_cut=r_cut, att_heads=att_heads, act_fn=act_fn, dropout=dropout
         )
 
         self.PI_update_Block = Polarizable_Interaction_Update_Block(

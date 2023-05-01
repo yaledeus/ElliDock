@@ -6,15 +6,21 @@ sys.path.append('..')
 from utils.geometry import kabsch_numpy
 
 
-def compute_crmsd(X, Y):
-    X_aligned, _, _ = kabsch_numpy(X, Y)
+def compute_crmsd(X, Y, aligned=False):
+    if not aligned:
+        X_aligned, _, _ = kabsch_numpy(X, Y)
+    else:
+        X_aligned = X
     dist = np.sum((X_aligned - Y) ** 2, axis=-1)
     crmsd = np.sqrt(np.mean(dist))
     return float(crmsd)
 
 
-def compute_irmsd(X, Y, seg, threshold=8):
-    X_aligned, _, _ = kabsch_numpy(X, Y)
+def compute_irmsd(X, Y, seg, aligned=False, threshold=8.):
+    if not aligned:
+        X_aligned, _, _ = kabsch_numpy(X, Y)
+    else:
+        X_aligned = X
     X_ab, X_ag = X_aligned[seg == 0], X_aligned[seg == 1]
     Y_ab, Y_ag = Y[seg == 0], Y[seg == 1]
     abag_dist = cdist(Y_ab, Y_ag)

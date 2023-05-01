@@ -50,7 +50,7 @@ def main(args):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    crmsds, irmsds = [], []
+    a_crmsds, a_irmsds, u_crmsds, u_irmsds = [], [], [], []
 
     for pdb_name in tqdm(test_pdbs):
         ligand_bound_path = os.path.join(test_path, 'complexes', pdb_name + '_l_b_COMPLEX.pdb')
@@ -73,18 +73,23 @@ def main(args):
         dock_X = dock_X.cpu().numpy()
         assert dock_X.shape[0] == gt_X.shape[0], 'coordinates dimension mismatch'
 
-        crmsd = compute_crmsd(dock_X, gt_X)
-        irmsd = compute_irmsd(dock_X, gt_X, Seg)
-        crmsds.append(crmsd)
-        irmsds.append(irmsd)
+        aligned_crmsd = compute_crmsd(dock_X, gt_X, aligned=False)
+        aligned_irmsd = compute_irmsd(dock_X, gt_X, Seg, aligned=False)
+        unaligned_crmsd = compute_crmsd(dock_X, gt_X, aligned=True)
+        unaligned_irmsd = compute_irmsd(dock_X, gt_X, Seg, aligned=True)
+        a_crmsds.append(aligned_crmsd)
+        a_irmsds.append(aligned_irmsd)
+        u_crmsds.append(unaligned_crmsd)
+        u_irmsds.append(unaligned_irmsd)
 
         # print(f'[+] generating docked receptor pdb file: {pdb_name}')
         gen_docked_pdb(pdb_name, receptor_unbound_path, save_dir, dock_trans_list[0])
 
-    for name, val in zip(['CRMSD', 'IRMSD'], [crmsds, irmsds]):
+    for name, val in zip(['CRMSD(aligned)', 'IRMSD(aligned)', 'CRMSD', 'IRMSD'],
+                         [a_crmsds, a_irmsds, u_crmsds, u_irmsds]):
         print(f'{name} median: {np.median(val)}', end=' ')
-        print(f'{name} mean: {np.mean(val)}', end=' ')
-        print(f'{name} std: {np.std(val)}')
+        print(f'mean: {np.mean(val)}', end=' ')
+        print(f'std: {np.std(val)}')
 
 
 def parse():

@@ -13,19 +13,18 @@ from .gnn import PINN, Gated_Equivariant_Block, RBF, coord2radial
 
 
 class ExpDock(nn.Module):
-    def __init__(self, embed_size, hidden_size, k_neighbors=9, n_layers=4, n_keypoints=12,
-                 rbf_dim=20, r_cut=1., dropout=0.1, mean=None, std=None) -> None:
+    def __init__(self, embed_size, hidden_size, k_neighbors=9, n_layers=4,
+                 rbf_dim=20, r_cut=1., att_heads=4, dropout=0.1,
+                 mean=None, std=None) -> None:
         super(ExpDock, self).__init__()
         self.embed_size = embed_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
-        self.n_keypoints = n_keypoints
 
         self.rbf_dim = rbf_dim
         self.r_cut = r_cut
 
         self.quad_const = 1.
-        self.max_num_mesh = 50
 
         node_in_d, edge_in_d = ComplexGraph.feature_dim(embed_size)
 
@@ -41,7 +40,7 @@ class ExpDock(nn.Module):
         for i in range(self.n_layers):
             self.add_module(f'gnn_{i}', PINN(
                 hidden_size, hidden_size, hidden_size, edge_in_d, rbf_dim=self.rbf_dim,
-                r_cut=self.r_cut, act_fn=nn.SiLU(), dropout=dropout
+                r_cut=self.r_cut, att_heads=att_heads, act_fn=nn.SiLU(), dropout=dropout
                 )
             )
             self.add_module(f'inter_act_{i}', nn.Sequential(
@@ -64,10 +63,34 @@ class ExpDock(nn.Module):
             nn.Linear(self.hidden_size // 2, 1)
         )
 
-        self.final_conv = nn.Sequential(
-            nn.Linear(self.hidden_size, self.n_keypoints, bias=False),
+        self.re_inv_conv = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_size, 3)
+        )
+
+        self.li_inv_conv = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.hidden_size, 3)
+        )
+
+        self.final_att_block = nn.Parameter(torch.rand(hidden_size, hidden_size))
+
+        self.re_equiv_conv = nn.Sequential(
+            nn.Linear(self.hidden_size, 3 * 3 + 1, bias=False),
             nn.Dropout(dropout)
         )
+
+        self.li_equiv_conv = nn.Sequential(
+            nn.Linear(self.hidden_size, 3 * 3 + 1, bias=False),
+            nn.Dropout(dropout)
+        )
+
+        self.neg_penalty_loss = NegPenaltyLoss()
+        self.out_span_loss = OutSpanLoss()
 
         self._init()
 
@@ -145,8 +168,8 @@ class ExpDock(nn.Module):
 
         node_feat, vec_feat = self.gated_equiv_block(node_feat, vec_feat)
 
-        # ot loss && dock loss & rmsd loss & stable loss & match loss
-        ot_loss = 0.
+        # fit loss && dock loss & rmsd loss & stable loss & match loss
+        fit_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
         stable_loss = 0.
@@ -158,38 +181,79 @@ class ExpDock(nn.Module):
             re_center = X[receptor_idx].mean(dim=0) # (3,)
             li_center = X[ligand_idx].mean(dim=0)   # (3,)
 
-            Y1 = self.final_conv(
+            inv1 = self.re_inv_conv(
+                node_feat[receptor_idx] * torch.sigmoid(
+                    (node_feat[receptor_idx] @ self.final_att_block @ node_feat[ligand_idx].T)
+                    .mean(dim=1)
+                ).unsqueeze(1)
+            ).sum(dim=0)    # (3,)
+
+            inv2 = self.li_inv_conv(
+                node_feat[ligand_idx] * torch.sigmoid(
+                    (node_feat[ligand_idx] @ self.final_att_block @ node_feat[receptor_idx].T)
+                    .mean(dim=1)
+                ).unsqueeze(1)
+            ).sum(dim=0)    # (3,)
+
+            # hyperboloid constrain
+            std_sgn = torch.tensor([-1., -1., 1.], device=device)
+            eigen = inv1 + inv2 # (3,)
+            eigen = eigen * torch.sgn(eigen) * std_sgn
+
+            Y1 = self.re_equiv_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
             ).transpose(1, 2).sum(dim=0) / self.scale_block(
                 torch.cat([torch.norm(vec_feat[receptor_idx], dim=-1),
                            torch.norm(X[receptor_idx] - re_center, dim=1, keepdim=True)], dim=1)
-            ).mean()   # (K, 3)
+            ).mean()   # (3*3+1, 3)
 
-            Y2 = self.final_conv(
+            Y2 = self.li_equiv_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
             ).transpose(1, 2).sum(dim=0) / self.scale_block(
                 torch.cat([torch.norm(vec_feat[ligand_idx], dim=-1),
                            torch.norm(X[ligand_idx] - li_center, dim=1, keepdim=True)], dim=1)
-            ).mean()   # (K, 3)
+            ).mean()   # (3*3+1, 3)
+
+            re_P, re_prim = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
+            li_P, li_prim = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
+
+            re_Q = modified_gram_schmidt(re_P)  # orthogonal matrix
+            li_Q = modified_gram_schmidt(li_P)
+
+            re_quad = re_Q @ torch.diag(eigen) @ re_Q.T    # order-2 tensor, (3, 3)
+            li_quad = li_Q @ torch.diag(eigen) @ li_Q.T
 
             # SO(3) => E(3)
-            Y1 = Y1 + re_center
-            Y2 = Y2 + li_center
+            re_quad_prime, re_prim_prime = quadratic_O3_to_E3(re_quad, re_prim, scale=self.quad_const, t=re_center)
+            li_quad_prime, li_prim_prime = quadratic_O3_to_E3(li_quad, li_prim, scale=self.quad_const, t=li_center)
 
-            # compute ot loss
-            P1, P2 = trans_keypoints[k_bid == i], keypoints[k_bid == i]
-            D1 = torch.cdist(Y1, P1)  # (K, S)
-            min_indices_1 = torch.argmin(D1, dim=1)  # (K,)
-            del D1  # free memory
-            ot_loss += F.mse_loss(Y1, P1[min_indices_1])
-            D2 = torch.cdist(Y2, P2)  # (K, S)
-            min_indices_2 = torch.argmin(D2, dim=1)  # (K,)
-            ot_loss += F.mse_loss(Y2, P2[min_indices_2])
-            del D2  # free memory
-            torch.cuda.empty_cache()
+            re_std, R1, t1 = standard_quadratic_transform(re_quad_prime, re_prim_prime, scale=self.quad_const)
+            li_std, R2, t2 = standard_quadratic_transform(li_quad_prime, li_prim_prime, scale=self.quad_const)
 
-            # compute dock loss
-            _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
+            # keypoint fitness
+            P1 = trans_keypoints[k_bid == i] @ R1 + t1
+            P2 = keypoints[k_bid == i] @ R2 + t2
+            X1 = X[receptor_idx] @ R1 + t1
+            X2 = X[ligand_idx] @ R2 + t2
+            key_fit1 = P1**2 @ re_std[:3] - self.quad_const
+            key_fit2 = P2**2 @ li_std[:3] - self.quad_const
+            coord_fit1 = X1**2 @ re_std[:3] - self.quad_const
+            coord_fit2 = X2**2 @ li_std[:3] - self.quad_const
+            fit_loss += F.smooth_l1_loss(key_fit1, torch.zeros(P1.shape[0]).to(device))
+            fit_loss += F.smooth_l1_loss(key_fit2, torch.zeros(P2.shape[0]).to(device))
+            fit_loss += self.neg_penalty_loss(coord_fit1)
+            fit_loss += self.neg_penalty_loss(coord_fit2)
+            # z span constrain
+            fit_loss += self.out_span_loss(P1[:, 2], low=1./re_std[2].clip(min=2.).sqrt(),
+                                           high=2./re_std[2].clip(min=2.).sqrt())
+            fit_loss += self.out_span_loss(P2[:, 2], low=-2./li_std[2].clip(min=2.).sqrt(),
+                                           high=-1./li_std[2].clip(min=2.).sqrt())
+            BIG_BOUND = 1e8
+            fit_loss += self.out_span_loss(X1[:, 2], low=0.,  high=BIG_BOUND)
+            fit_loss += self.out_span_loss(X2[:, 2], low=-BIG_BOUND, high=0.)
+
+            R = R1 @ R2.T
+            t = (t1 - t2) @ R2.T
 
             ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(R, rot[i].T)
@@ -199,23 +263,15 @@ class ExpDock(nn.Module):
             X1_aligned = X[receptor_idx] @ R + t   # (N, 3)
             rmsd_loss += F.mse_loss(X1_aligned, ori_X[receptor_idx])
 
-            # compute stable loss
-            stable_loss += 1. / torch.mean(self.normalizer.std) * \
-                           protein_surface_intersection(X1_aligned * torch.mean(self.normalizer.std),
-                                                        X[ligand_idx] * torch.mean(self.normalizer.std)).clip(min=0.).mean()
-            stable_loss += 1. / torch.mean(self.normalizer.std) * \
-                           protein_surface_intersection(X[ligand_idx] * torch.mean(self.normalizer.std),
-                                                        X1_aligned * torch.mean(self.normalizer.std)).clip(min=0.).mean()
-
         # normalize
-        ot_loss /= bs
+        fit_loss /= bs
         dock_loss /= bs
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = ot_loss + dock_loss + stable_loss
+        loss = 0.2 * fit_loss + dock_loss + rmsd_loss
 
-        return loss, (ot_loss, dock_loss, stable_loss, rmsd_loss)
+        return loss, (fit_loss, dock_loss, stable_loss, rmsd_loss)
 
     def dock(self, X, S, RP, Seg, center, bid, **kwargs):
         device = X.device
@@ -267,29 +323,60 @@ class ExpDock(nn.Module):
             receptor_idx = torch.logical_and(Seg == 0, bid == i)
             ligand_idx = torch.logical_and(Seg == 1, bid == i)
 
-            re_center = X[receptor_idx].mean(dim=0)  # (3,)
-            li_center = X[ligand_idx].mean(dim=0)  # (3,)
+            re_center = X[receptor_idx].mean(dim=0) # (3,)
+            li_center = X[ligand_idx].mean(dim=0)   # (3,)
 
-            Y1 = self.final_conv(
+            inv1 = self.re_inv_conv(
+                node_feat[receptor_idx] * torch.sigmoid(
+                    (node_feat[receptor_idx] @ self.final_att_block @ node_feat[ligand_idx].T)
+                        .mean(dim=1)
+                ).unsqueeze(1)
+            ).sum(dim=0)  # (3,)
+
+            inv2 = self.li_inv_conv(
+                node_feat[ligand_idx] * torch.sigmoid(
+                    (node_feat[ligand_idx] @ self.final_att_block @ node_feat[receptor_idx].T)
+                        .mean(dim=1)
+                ).unsqueeze(1)
+            ).sum(dim=0)  # (3,)
+
+            # hyperboloid constrain
+            std_sgn = torch.tensor([-1., -1., 1.], device=device)
+            eigen = inv1 + inv2  # (3,)
+            eigen = eigen * torch.sgn(eigen) * std_sgn
+
+            Y1 = self.re_equiv_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
             ).transpose(1, 2).sum(dim=0) / self.scale_block(
                 torch.cat([torch.norm(vec_feat[receptor_idx], dim=-1),
                            torch.norm(X[receptor_idx] - re_center, dim=1, keepdim=True)], dim=1)
-            ).mean()  # (K, 3)
+            ).mean()  # (3*3+1, 3)
 
-            Y2 = self.final_conv(
+            Y2 = self.li_equiv_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
             ).transpose(1, 2).sum(dim=0) / self.scale_block(
                 torch.cat([torch.norm(vec_feat[ligand_idx], dim=-1),
                            torch.norm(X[ligand_idx] - li_center, dim=1, keepdim=True)], dim=1)
-            ).mean()  # (K, 3)
+            ).mean()  # (3*3+1, 3)
+
+            re_P, re_prim = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
+            li_P, li_prim = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
+
+            re_Q = modified_gram_schmidt(re_P)  # orthogonal matrix
+            li_Q = modified_gram_schmidt(li_P)
+
+            re_quad = re_Q @ torch.diag(eigen) @ re_Q.T  # order-2 tensor, (3, 3)
+            li_quad = li_Q @ torch.diag(eigen) @ li_Q.T
 
             # SO(3) => E(3)
-            Y1 = Y1 + re_center
-            Y2 = Y2 + li_center
+            re_quad_prime, re_prim_prime = quadratic_O3_to_E3(re_quad, re_prim, scale=self.quad_const, t=re_center)
+            li_quad_prime, li_prim_prime = quadratic_O3_to_E3(li_quad, li_prim, scale=self.quad_const, t=li_center)
 
-            # compute dock loss
-            _, R, t = kabsch_torch(Y1, Y2)  # minimize RMSD(Y1R + t, Y2)
+            re_std, R1, t1 = standard_quadratic_transform(re_quad_prime, re_prim_prime, scale=self.quad_const)
+            li_std, R2, t2 = standard_quadratic_transform(li_quad_prime, li_prim_prime, scale=self.quad_const)
+
+            R = R1 @ R2.T
+            t = (t1 - t2) @ R2.T
 
             X[receptor_idx] = X[receptor_idx] @ R + t
             dock_trans_list.append(self.normalizer.dock_transformation(center, i, R, t))
@@ -353,11 +440,52 @@ def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):
     return refined_H_r
 
 
-def rotation_loss(pred_R, gt_R):
-    cos_sim = (torch.trace(pred_R @ gt_R.T) - 1) / 2.0
-    cos_sim = torch.clamp(cos_sim, -1, 1)
-    angle_error = torch.acos(cos_sim)
-    return angle_error
+class NegPenaltyLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input_tensor):
+        device = input_tensor.device
+
+        numel = torch.numel(input_tensor)
+
+        if numel == 0:
+            return torch.tensor(0., device=device)
+
+        negative_mask = input_tensor < 0
+        positive_mask = ~negative_mask
+
+        negative_loss = torch.sum(input_tensor[negative_mask].abs())
+        positive_loss = torch.sum(input_tensor[positive_mask].sqrt())
+
+        loss = negative_loss + positive_loss
+        loss = loss / numel # mean
+
+        return loss
+
+
+class OutSpanLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input_tensor, low, high):
+        device = input_tensor.device
+
+        lower_loss_mask = input_tensor < low
+        upper_loss_mask = input_tensor > high
+
+        numel = lower_loss_mask.sum() + upper_loss_mask.sum()
+
+        if numel == 0:
+            return torch.tensor(0., device=device)
+
+        lower_loss = torch.sum(torch.pow(input_tensor[lower_loss_mask] - low, 2))
+        upper_loss = torch.sum(torch.pow(input_tensor[upper_loss_mask] - high, 2))
+
+        loss = lower_loss + upper_loss
+        loss = loss / numel # mean
+
+        return loss
 
 
 def sample_transformation(bid):

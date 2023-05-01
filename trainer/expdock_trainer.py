@@ -22,10 +22,10 @@ class ExpDockTrainer(Trainer):
     ########## Override end ##########
 
     def share_step(self, batch, batch_idx, val=False):
-        loss, (ot_loss, dock_loss, stable_loss, rmsd_loss) = self.model(**batch)
+        loss, (fit_loss, dock_loss, stable_loss, rmsd_loss) = self.model(**batch)
         log_type = 'Validation' if val else 'Train'
         self.log(f'Loss/{log_type}', loss, batch_idx, val)
-        self.log(f'OT Loss/{log_type}', ot_loss, batch_idx, val)
+        self.log(f'Fit Loss/{log_type}', fit_loss, batch_idx, val)
         self.log(f'Dock Loss/{log_type}', dock_loss, batch_idx, val)
         self.log(f'Stable Loss/{log_type}', stable_loss, batch_idx, val)
         self.log(f'RMSD Loss/{log_type}', rmsd_loss, batch_idx, val)
