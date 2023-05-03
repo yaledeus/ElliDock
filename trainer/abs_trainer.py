@@ -12,9 +12,12 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.logger import print_log
 
 
+def replace_nan_gradients(model):
+    for param in model.parameters():
+        if param.grad is not None:
+            param.grad.data = torch.nan_to_num(param.grad.data)
+
 ########### Import your packages below ##########
-
-
 class TrainConfig:
     def __init__(self, save_dir, lr, max_epoch,
                  metric_min_better=True, patience=3,
@@ -106,6 +109,7 @@ class Trainer:
                     continue
                 self.optimizer.zero_grad()
                 loss.backward()
+                replace_nan_gradients(self.model)
             except RuntimeError as e:
                 if 'out of memory' in str(e):
                     print_log('CUDA out of memory, skip batch', level='WARN')

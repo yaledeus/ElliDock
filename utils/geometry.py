@@ -345,6 +345,35 @@ def quadratic_O3_to_E3(A, b, scale, t):
     return A_prime, b_prime
 
 
+def elliptical_paraboloid_std2E3(Lambda, b, Q, t):
+    """
+    standard form of an elliptical paraboloid: Ax^2 + By^2 = z
+    :param Lambda: standard quadratic coef, (3,), satisfy Lambda[2] = 0
+    :param b: standard primary coef, (3,), satisfy b[0] = b[1] = 0
+    :param Q, t: transformation of E3, X' = QX + t
+    :return: A', b', c' satisfy <A'X', X'> + <b'X'> + c' = 0
+    """
+    assert Lambda[2] == 0. and b[0] == 0. and b[1] == 0.
+
+    A_prime = Q @ torch.diag(Lambda) @ Q.T
+    b_prime = Q @ b - 2 * A_prime @ t
+    c_prime = t @ A_prime @ t - t @ Q @ b
+
+    return A_prime, b_prime, c_prime
+
+"""
+# test elliptical_paraboloid_std2E3
+Lambda = torch.tensor([1., 2., 0.])
+b = torch.tensor([0., 0., -1.])
+X = torch.tensor([1., 0.5, 1.5])
+print(f"validate X in standard form: {X**2 @ Lambda + X @ b}")
+q = rand_rotation_matrix()
+t = torch.rand(3)
+X_prime = q @ X + t
+A_prime, b_prime, c_prime = elliptical_paraboloid_std2E3(Lambda, b, q, t)
+print(f"validate X_prime in transformed quadratic surface: {X_prime @ A_prime @ X_prime + X_prime @ b_prime + c_prime}")
+"""
+
 def quadratic_mean_importance_sampling(points, max_num_mesh):
     device = points.device
     num_points = points.shape[0]
