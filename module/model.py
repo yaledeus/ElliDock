@@ -25,7 +25,7 @@ class ExpDock(nn.Module):
         self.r_cut = r_cut
 
         self.quad_const = 1.
-        self.scale_factor = 0.05
+        self.scale_factor = 0.015
 
         node_in_d, edge_in_d = ComplexGraph.feature_dim(embed_size)
 
@@ -229,8 +229,8 @@ class ExpDock(nn.Module):
             # re_A_prime, re_b_prime, re_c_prime = elliptical_paraboloid_std2E3(Lambda, re_prim, R1, re_t_pri)
             # li_A_prime, li_b_prime, li_c_prime = elliptical_paraboloid_std2E3(Lambda, li_prim, R2, li_t_pri)
 
-            t1 = -R1 @ re_t_pri # posterior translation vector
-            t2 = -R2 @ li_t_pri
+            t1 = -re_t_pri @ R1 # posterior translation vector
+            t2 = -li_t_pri @ R2
 
             P1 = trans_keypoints[k_bid == i] @ R1 + t1
             P2 = keypoints[k_bid == i] @ R2 + t2
@@ -247,8 +247,8 @@ class ExpDock(nn.Module):
             fit_loss += F.smooth_l1_loss(key_fit1, torch.zeros(P1.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(key_fit2, torch.zeros(P2.shape[0]).to(device))
             # z-span fitness
-            fit_loss += self.out_span_loss(P1[:, 2], low=0.,  high=threshold)
-            fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=0.)
+            fit_loss += self.out_span_loss(P1[:, 2], low=-threshold, high=threshold)
+            fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=threshold)
             fit_loss += F.smooth_l1_loss(torch.relu(-coord_fit1), torch.zeros(X1.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(torch.relu( coord_fit2), torch.zeros(X2.shape[0]).to(device))
             # fit_loss += F.smooth_l1_loss(torch.relu( X1[:, 2]), torch.zeros(X1.shape[0]).to(device))
@@ -383,8 +383,8 @@ class ExpDock(nn.Module):
             # re_A_prime, re_b_prime, re_c_prime = elliptical_paraboloid_std2E3(Lambda, re_prim, R1, re_t_pri)
             # li_A_prime, li_b_prime, li_c_prime = elliptical_paraboloid_std2E3(Lambda, li_prim, R2, li_t_pri)
 
-            t1 = -R1 @ re_t_pri  # posterior translation vector
-            t2 = -R2 @ li_t_pri
+            t1 = -re_t_pri @ R1  # posterior translation vector
+            t2 = -li_t_pri @ R2
 
             R = R1 @ R_ref_3d @ R2.T
             t = (t1 @ R_ref_3d - t2) @ R2.T
