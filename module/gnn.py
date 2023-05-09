@@ -109,7 +109,7 @@ class Ch_Pos_GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d, act_fn=nn.SiLU(), dropout=0.1, attention=True):
         super(Ch_Pos_GCL, self).__init__()
         self.attention = attention
-        input_edge = input_nf + hidden_nf  # v_j, h_j
+        input_edge = 2 * hidden_nf  # h_i, h_j
         edge_coords_nf = 18  # dot(n_i, n_j) with order = {2,3,4}, d_ij with scale {1.5^x|x=0,1,...,14}
 
         self.ch_edge_mlp = nn.Sequential(
@@ -139,7 +139,7 @@ class Ch_Pos_GCL(nn.Module):
                 nn.Sigmoid()
             )
 
-    def forward(self, h, coord, edges, node_attr, edge_attr=None):
+    def forward(self, h, coord, edges, edge_attr=None):
         row, col = edges
         # radial, coord_diff = coord2radial(edges, coord)
         radial, coord_diff = coord2radialplus(edges, coord, scale=list(range(15)))
@@ -147,10 +147,10 @@ class Ch_Pos_GCL(nn.Module):
         nprod = vec2product(edges, nvecs)   # (n_edges, *)
 
         if edge_attr is None:
-            chem = torch.cat([h[col], node_attr[col]], dim=1)
+            chem = torch.cat([h[row], h[col]], dim=1)
             pos = torch.cat([nprod, radial], dim=1)
         else:
-            chem = torch.cat([h[col], node_attr[col], edge_attr], dim=1)
+            chem = torch.cat([h[row], h[col], edge_attr], dim=1)
             pos = torch.cat([nprod, radial, edge_attr], dim=1)
 
         chem = self.ch_edge_mlp(chem)
@@ -347,7 +347,7 @@ class Polarizable_Interaction_MP_Block(nn.Module):
 
         self.hidden_nf = hidden_nf
 
-        input_edges = input_nf + edges_in_d    # (hj, eij)
+        input_edges = input_nf + edges_in_d    # (hi, hj, eij)
 
         self.node_conv = nn.Sequential(
             nn.Linear(input_edges, hidden_nf),
@@ -509,16 +509,16 @@ class Gated_Equivariant_Block(nn.Module):
         return node_feat_out, vec_feat_out
 
 
-### Pairwise energy && Triangular self-Attention EGNN
+### Pairwise energy && Transformer self-attention EGNN
 class PTA_EGNN(nn.Module):
-    def __init__(self, input_nf, output_nf, hidden_nf, edges_in_d,
+    def __init__(self, input_nf, output_nf, hidden_nf, node_in_d, edge_in_d,
                  att_heads=4, act_fn=nn.SiLU(), dropout=0.1):
         super(PTA_EGNN, self).__init__()
 
         self.hidden_nf = hidden_nf
 
         self.ch_pos_gcl = Ch_Pos_GCL(
-            input_nf, hidden_nf, hidden_nf, edges_in_d,
+            hidden_nf, hidden_nf, hidden_nf, edge_in_d,
             act_fn, dropout
         )
 
@@ -542,7 +542,7 @@ class PTA_EGNN(nn.Module):
         )
 
         self.phi_h = nn.Sequential(
-            nn.Linear(hidden_nf * 2 + input_nf, hidden_nf),
+            nn.Linear(hidden_nf * 2 + node_in_d, hidden_nf),
             act_fn,
             nn.Dropout(dropout),
             nn.Linear(hidden_nf, hidden_nf)
@@ -551,7 +551,7 @@ class PTA_EGNN(nn.Module):
     def forward(self, h, coord, edges, edge_attr, node_attr, init_coord):
 
         # z: (n_edge, hidden_nf), coord_diff: (n_edge, 3)
-        z, chem, pos, coord_diff = self.ch_pos_gcl(h, coord, edges, node_attr, edge_attr)
+        z, chem, pos, coord_diff = self.ch_pos_gcl(h, coord, edges, edge_attr)
         # m: (n_edge, hidden_nf)
         m = self.transformer_gcl(z, edges)
 

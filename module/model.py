@@ -24,7 +24,6 @@ class ExpDock(nn.Module):
         self.rbf_dim = rbf_dim
         self.r_cut = r_cut
 
-        self.quad_const = 1.
         self.scale_factor = 0.015
 
         node_in_d, edge_in_d = ComplexGraph.feature_dim(embed_size)
@@ -105,26 +104,21 @@ class ExpDock(nn.Module):
 
         # center to ligand and normalize
         X = self.normalizer.centering(X, center, bid)
+        X = self.normalizer.normalize(X).float()
         keypoints = self.normalizer.centering(keypoints, center, k_bid)
+        keypoints = self.normalizer.normalize(keypoints).float().detach()
 
         # clone original X
         ori_X = X[:, CA_INDEX].clone().detach()
         # clone keypoints for receptor after transformation in R3
-        keypoints = keypoints.float().detach()
         trans_keypoints = keypoints.clone()
 
         # rotate and translate for antibodies, X' = XR + t
         rot, trans = sample_transformation(bid)
         for i in range(bs):
             receptor_idx = torch.logical_and(Seg == 0, bid == i)
-            X[receptor_idx] = X[receptor_idx] @ rot[i] + trans[i] * torch.mean(self.normalizer.std)
-            trans_keypoints[k_bid == i] = trans_keypoints[k_bid == i] @ rot[i] + trans[i] * torch.mean(
-                self.normalizer.std)
-
-        X = self.normalizer.normalize(X).float()
-        ori_X = self.normalizer.normalize(ori_X).float()
-        keypoints = self.normalizer.normalize(keypoints).float()
-        trans_keypoints = self.normalizer.normalize(trans_keypoints).float()
+            X[receptor_idx] = X[receptor_idx] @ rot[i] + trans[i]
+            trans_keypoints[k_bid == i] = trans_keypoints[k_bid == i] @ rot[i] + trans[i]
 
         node_attr, edges, edge_attr = self.graph_constructor(
             X, S, RP, Seg, bid
@@ -191,10 +185,9 @@ class ExpDock(nn.Module):
                 ).unsqueeze(1)
             ).sum(dim=0)    # (3 + 1,)
 
-            eigen = inv1[:3] + inv2[:3]
-            eigen = eigen * torch.sgn(eigen)    # (+, +, +)
-
             # paraboloid constrain
+            eigen = inv1[:3] + inv2[:3]
+            eigen = eigen * torch.sgn(eigen) # (+, +, +)
             Lambda = torch.zeros(3).to(device)
             re_prim = torch.zeros(3).to(device)
             li_prim = torch.zeros(3).to(device)
@@ -211,11 +204,10 @@ class ExpDock(nn.Module):
 
             Y1 = self.re_equiv_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scale_factor   # (3*3 + 1, 3)
-
+            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3 * 3 + 1, 3)
             Y2 = self.li_equiv_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scale_factor   # (3*3 + 1, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3 * 3 + 1, 3)
 
             re_P, re_std_trans = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
             li_P, li_std_trans = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
@@ -239,9 +231,11 @@ class ExpDock(nn.Module):
 
             key_fit1 = P1**2 @ Lambda + P1 @ re_prim
             key_fit2 = P2**2 @ Lambda + P2 @ li_prim
-            # coord_fit1 = X1**2 @ Lambda + X1 @ re_prim
-            coord_fit1 = X1**2 @ Lambda + X1 @ li_prim
-            coord_fit2 = X2**2 @ Lambda + X2 @ li_prim
+            # intersection constrain
+            re_fit_re_surf = X1**2 @ Lambda + X1 @ re_prim
+            li_fit_re_surf = X2**2 @ Lambda + X2 @ re_prim
+            re_fit_li_surf = X1**2 @ Lambda + X1 @ li_prim
+            li_fit_li_surf = X2**2 @ Lambda + X2 @ li_prim
 
             # keypoint fitness
             fit_loss += F.smooth_l1_loss(key_fit1, torch.zeros(P1.shape[0]).to(device))
@@ -249,10 +243,10 @@ class ExpDock(nn.Module):
             # z-span fitness
             fit_loss += self.out_span_loss(P1[:, 2], low=-threshold, high=threshold)
             fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=threshold)
-            fit_loss += F.smooth_l1_loss(torch.relu(-coord_fit1), torch.zeros(X1.shape[0]).to(device))
-            fit_loss += F.smooth_l1_loss(torch.relu( coord_fit2), torch.zeros(X2.shape[0]).to(device))
-            # fit_loss += F.smooth_l1_loss(torch.relu( X1[:, 2]), torch.zeros(X1.shape[0]).to(device))
-            # fit_loss += F.smooth_l1_loss(torch.relu(-X2[:, 2]), torch.zeros(X2.shape[0]).to(device))
+            fit_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf), torch.zeros(X1.shape[0]).to(device))
+            fit_loss += F.smooth_l1_loss(torch.relu(-li_fit_re_surf), torch.zeros(X2.shape[0]).to(device))
+            fit_loss += F.smooth_l1_loss(torch.relu( li_fit_li_surf), torch.zeros(X2.shape[0]).to(device))
+            fit_loss += F.smooth_l1_loss(torch.relu(-re_fit_li_surf), torch.zeros(X1.shape[0]).to(device))
             # x-y span fitness
             _, R_ref_gt, _ = kabsch_torch(P1[:, :2], P2[:, :2])
             fit_loss += (R_ref - R_ref_gt).pow(2).mean()
@@ -260,9 +254,8 @@ class ExpDock(nn.Module):
             R = R1 @ R_ref_3d @ R2.T
             t = (t1 @ R_ref_3d - t2) @ R2.T
 
-            ct = self.normalizer.mean / torch.mean(self.normalizer.std)
             dock_loss += F.mse_loss(R, rot[i].T)
-            dock_loss += F.mse_loss(t, (ct - trans[i]) @ rot[i].T - ct)
+            dock_loss += F.mse_loss(t, -trans[i] @ rot[i].T)
 
             # compute rmsd loss
             X1_aligned = X[receptor_idx] @ R + t   # (N, 3)
@@ -274,7 +267,7 @@ class ExpDock(nn.Module):
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = 0.5 * fit_loss + dock_loss + rmsd_loss
+        loss = 0.5 * fit_loss + dock_loss
 
         return loss, (fit_loss, dock_loss, stable_loss, rmsd_loss)
 
@@ -345,17 +338,6 @@ class ExpDock(nn.Module):
                 ).unsqueeze(1)
             ).sum(dim=0)  # (3 + 1,)
 
-            eigen = inv1[:3] + inv2[:3]
-            eigen = eigen * torch.sgn(eigen)  # (+, +, +)
-
-            # paraboloid constrain
-            Lambda = torch.zeros(3).to(device)
-            re_prim = torch.zeros(3).to(device)
-            li_prim = torch.zeros(3).to(device)
-            Lambda[:2] = eigen[:2]
-            re_prim[2] = -eigen[2]
-            li_prim[2] = eigen[2]
-
             # x-y refine
             theta = inv1[3] - inv2[3]
             R_ref = torch.tensor([[ torch.cos(theta), torch.sin(theta)],
@@ -365,11 +347,10 @@ class ExpDock(nn.Module):
 
             Y1 = self.re_equiv_conv(
                 (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3*3 + 1, 3)
-
+            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3 * 3 + 1, 3)
             Y2 = self.li_equiv_conv(
                 (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
-            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3*3 + 1, 3)
+            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3 * 3 + 1, 3)
 
             re_P, re_std_trans = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
             li_P, li_std_trans = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
