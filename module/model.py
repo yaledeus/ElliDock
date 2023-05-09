@@ -243,6 +243,7 @@ class ExpDock(nn.Module):
             # z-span fitness
             fit_loss += self.out_span_loss(P1[:, 2], low=-threshold, high=threshold)
             fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=threshold)
+            # avoid intersection
             fit_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf), torch.zeros(X1.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(torch.relu(-li_fit_re_surf), torch.zeros(X2.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(torch.relu( li_fit_li_surf), torch.zeros(X2.shape[0]).to(device))
