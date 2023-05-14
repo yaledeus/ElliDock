@@ -17,20 +17,12 @@ def compute_crmsd(X, Y, aligned=False):
 
 
 def compute_irmsd(X, Y, seg, aligned=False, threshold=8.):
-    if not aligned:
-        X_aligned, _, _ = kabsch_numpy(X, Y)
-    else:
-        X_aligned = X
-    X_ab, X_ag = X_aligned[seg == 0], X_aligned[seg == 1]
-    Y_ab, Y_ag = Y[seg == 0], Y[seg == 1]
-    abag_dist = cdist(Y_ab, Y_ag)
-    ab_idx, ag_idx = np.where(abag_dist < threshold)
-    ab_idx = np.unique(ab_idx)
-    ag_idx = np.unique(ag_idx)
-    ab_dist = np.sum((X_ab[ab_idx] - Y_ab[ab_idx]) ** 2, axis=-1)
-    ag_dist = np.sum((X_ag[ag_idx] - Y_ag[ag_idx]) ** 2, axis=-1)
-    dist = np.hstack([ab_dist, ag_dist])
-    irmsd = np.sqrt(np.mean(dist))
-    return float(irmsd)
+    X_re, X_li = X[seg == 0], X[seg == 1]
+    Y_re, Y_li = Y[seg == 0], Y[seg == 1]
+    dist = cdist(Y_re, Y_li)
+    positive_re_idx, positive_li_idx = np.where(dist < threshold)
+    positive_Y = np.concatenate((Y_re[positive_re_idx], Y_li[positive_li_idx]), axis=0)
+    positive_X = np.concatenate((X_re[positive_re_idx], X_li[positive_li_idx]), axis=0)
+    return float(compute_crmsd(positive_X, positive_Y, aligned))
 
 

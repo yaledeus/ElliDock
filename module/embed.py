@@ -131,7 +131,7 @@ class ComplexGraph(nn.Module):
     def forward(self, X, S, RP, Seg, bid):
         node_attr = self.embedding(X, S, RP)                            # (N, embed_size + 3)
         edges = self._construct_edges(X, Seg, bid, self.k_neighbors)    # (2, n_edge)
-        edge_attr = self.pairwise_embedding(X, edges)                   # (n_edge, 14)
+        edge_attr = self.pairwise_embedding(X, edges)                   # (n_edge, 32)
         return node_attr, edges, edge_attr
 
     @classmethod

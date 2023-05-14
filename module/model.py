@@ -212,14 +212,14 @@ class ExpDock(nn.Module):
             re_P, re_std_trans = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
             li_P, li_std_trans = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
 
-            R1 = modified_gram_schmidt(re_P)  # orthogonal matrix
-            R2 = modified_gram_schmidt(li_P)
+            R1 = to_rotation_matrix(re_P)  # orthogonal matrix
+            R2 = to_rotation_matrix(li_P)
 
             re_t_pri = re_std_trans + re_center # prior translation vector
             li_t_pri = li_std_trans + li_center
 
-            # re_A_prime, re_b_prime, re_c_prime = elliptical_paraboloid_std2E3(Lambda, re_prim, R1, re_t_pri)
-            # li_A_prime, li_b_prime, li_c_prime = elliptical_paraboloid_std2E3(Lambda, li_prim, R2, li_t_pri)
+            # re_A_post, re_b_post, re_c_post = elliptical_paraboloid_std2E3(Lambda, re_prim, R1, re_t_pri)
+            # li_A_post, li_b_post, li_c_post = elliptical_paraboloid_std2E3(Lambda, li_prim, R2, li_t_pri)
 
             t1 = -re_t_pri @ R1 # posterior translation vector
             t2 = -li_t_pri @ R2
@@ -241,8 +241,8 @@ class ExpDock(nn.Module):
             fit_loss += F.smooth_l1_loss(key_fit1, torch.zeros(P1.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(key_fit2, torch.zeros(P2.shape[0]).to(device))
             # z-span fitness
-            fit_loss += self.out_span_loss(P1[:, 2], low=-threshold, high=threshold)
-            fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=threshold)
+            fit_loss += self.out_span_loss(P1[:, 2], low=0.,  high=threshold)
+            fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=0.)
             # avoid intersection
             fit_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf), torch.zeros(X1.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(torch.relu(-li_fit_re_surf), torch.zeros(X2.shape[0]).to(device))
@@ -356,14 +356,11 @@ class ExpDock(nn.Module):
             re_P, re_std_trans = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
             li_P, li_std_trans = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
 
-            R1 = modified_gram_schmidt(re_P)  # orthogonal matrix
-            R2 = modified_gram_schmidt(li_P)
+            R1 = to_rotation_matrix(re_P)  # orthogonal matrix
+            R2 = to_rotation_matrix(li_P)
 
             re_t_pri = re_std_trans + re_center  # prior translation vector
             li_t_pri = li_std_trans + li_center
-
-            # re_A_prime, re_b_prime, re_c_prime = elliptical_paraboloid_std2E3(Lambda, re_prim, R1, re_t_pri)
-            # li_A_prime, li_b_prime, li_c_prime = elliptical_paraboloid_std2E3(Lambda, li_prim, R2, li_t_pri)
 
             t1 = -re_t_pri @ R1  # posterior translation vector
             t2 = -li_t_pri @ R2
@@ -378,6 +375,117 @@ class ExpDock(nn.Module):
         X = self.normalizer.uncentering(X, center, bid)
 
         return X, dock_trans_list
+
+    def pred_elli_surface(self, X, S, RP, Seg, center, bid, **kwargs):
+        device = X.device
+        bs = bid[-1] + 1
+        # center to antigen
+        X = self.normalizer.centering(X, center, bid)
+        # normalize X to approximately normal distribution
+        X = self.normalizer.normalize(X).float()
+
+        node_attr, edges, edge_attr = self.graph_constructor(
+            X, S, RP, Seg, bid
+        )
+
+        # CA atoms only
+        X = X[:, CA_INDEX]  # (N, 3)
+
+        node_feat = self.in_conv(node_attr)  # (N, hidden_size)
+        vec_feat = torch.zeros(X.shape[0], self.hidden_size, 3).to(device)  # (N, hidden_size, 3)
+
+        radial, coord_diff = coord2radial(edges, X)  # radial: (n_edges, 1), coord_diff: (n_edges, 3)
+        norm = torch.sqrt(radial) + 1e-8  # (n_edges, 1)
+        rbf = RBF(norm, self.r_cut, self.rbf_dim)  # (n_edges, rbf_dim)
+
+        for i in range(self.n_layers):
+            intra_node_feat, vec_feat = self._modules[f'gnn_{i}'](
+                node_feat, vec_feat, edges, edge_attr, coord_diff, rbf
+            )
+            for b_ind in range(bs):
+                receptor_idx = torch.logical_and(Seg == 0, bid == b_ind)
+                ligand_idx = torch.logical_and(Seg == 1, bid == b_ind)
+                node_feat[receptor_idx] = intra_node_feat[receptor_idx] + \
+                                          torch.sigmoid((intra_node_feat[receptor_idx] @
+                                                         self._parameters[f'inter_att_{i}'] @
+                                                         intra_node_feat[ligand_idx].T)
+                                                        .mean(dim=1)).unsqueeze(1) * \
+                                          self._modules[f'inter_act_{i}'](intra_node_feat[receptor_idx])
+                node_feat[ligand_idx] = intra_node_feat[ligand_idx] + \
+                                        torch.sigmoid((intra_node_feat[ligand_idx] @
+                                                       self._parameters[f'inter_att_{i}'] @
+                                                       intra_node_feat[receptor_idx].T)
+                                                      .mean(dim=1)).unsqueeze(1) * \
+                                        self._modules[f'inter_act_{i}'](intra_node_feat[ligand_idx])
+
+        node_feat, vec_feat = self.gated_equiv_block(node_feat, vec_feat)
+
+        re_surface, li_surface, unnorm_trans_list = [], [], []
+
+        for i in range(bs):
+            receptor_idx = torch.logical_and(Seg == 0, bid == i)
+            ligand_idx = torch.logical_and(Seg == 1, bid == i)
+
+            re_center = X[receptor_idx].mean(dim=0) # (3,)
+            li_center = X[ligand_idx].mean(dim=0)   # (3,)
+
+            inv1 = self.re_inv_conv(
+                node_feat[receptor_idx] * torch.sigmoid(
+                    (node_feat[receptor_idx] @ self.final_att_block @ node_feat[ligand_idx].T)
+                        .mean(dim=1)
+                ).unsqueeze(1)
+            ).sum(dim=0)  # (3 + 1,)
+
+            inv2 = self.li_inv_conv(
+                node_feat[ligand_idx] * torch.sigmoid(
+                    (node_feat[ligand_idx] @ self.final_att_block @ node_feat[receptor_idx].T)
+                        .mean(dim=1)
+                ).unsqueeze(1)
+            ).sum(dim=0)  # (3 + 1,)
+
+            # paraboloid constrain
+            eigen = inv1[:3] + inv2[:3]
+            eigen = eigen * torch.sgn(eigen)  # (+, +, +)
+
+            # x-y refine
+            theta = inv1[3] - inv2[3]
+            R_ref = torch.tensor([[torch.cos(theta), torch.sin(theta)],
+                                  [-torch.sin(theta), torch.cos(theta)]], device=device)
+            R_ref_3d = torch.eye(3).to(device)
+            R_ref_3d[:2, :2] = R_ref
+
+            Y1 = self.re_equiv_conv(
+                (vec_feat[receptor_idx] * node_feat[receptor_idx][:, :, None]).transpose(1, 2)
+            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3 * 3 + 1, 3)
+            Y2 = self.li_equiv_conv(
+                (vec_feat[ligand_idx] * node_feat[ligand_idx][:, :, None]).transpose(1, 2)
+            ).transpose(1, 2).sum(dim=0) / self.scale_factor  # (3 * 3 + 1, 3)
+
+            re_P, re_std_trans = Y1[:3] + Y1[3:6] + Y1[6:9], Y1[9]
+            li_P, li_std_trans = Y2[:3] + Y2[3:6] + Y2[6:9], Y2[9]
+
+            R1 = to_rotation_matrix(re_P)  # orthogonal matrix
+            R2 = to_rotation_matrix(li_P)
+
+            re_t_pri = re_std_trans + re_center  # prior translation vector
+            li_t_pri = li_std_trans + li_center
+
+            # re_A_post, re_b_post, re_c_post = elliptical_paraboloid_std2E3(Lambda, re_prim, R1, re_t_pri)
+            # li_A_post, li_b_post, li_c_post = elliptical_paraboloid_std2E3(Lambda, li_prim, R2, li_t_pri)
+
+            t1 = -re_t_pri @ R1  # posterior translation vector
+            t2 = -li_t_pri @ R2
+
+            R = R1 @ R_ref_3d @ R2.T
+            t = (t1 @ R_ref_3d - t2) @ R2.T
+
+            re_surface.append((eigen[0].cpu().item(), eigen[1].cpu().item(), -eigen[2].cpu().item(),
+                               R2.cpu().numpy(), li_t_pri.cpu().numpy()))
+            li_surface.append((eigen[0].cpu().item(), eigen[1].cpu().item(),  eigen[2].cpu().item(),
+                               R2.cpu().numpy(), li_t_pri.cpu().numpy()))
+            unnorm_trans_list.append(self.normalizer.unnorm_transformation(center, i))
+
+        return re_surface, li_surface, unnorm_trans_list
 
 
 def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):

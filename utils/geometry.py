@@ -493,6 +493,19 @@ B = torch.tensor([[0, 0, 0], [1, 0, 0], [0, 1, 0]]).float()
 print(f"maximum area of point cloud B should be 0.5: {max_triangle_area(B)}")
 """
 
+def to_rotation_matrix(vecs):
+    V, S, W = torch.linalg.svd(vecs)
+
+    d = (torch.linalg.det(V) * torch.linalg.det(W)) < 0.0
+
+    V_R = V.clone()
+    if d:
+        V_R[:, -1] = -V[:, -1]
+
+    R: torch.Tensor = V_R @ W
+
+    return R
+
 
 def modified_gram_schmidt(vecs):
     """
@@ -561,6 +574,16 @@ class CoordNomralizer(nn.Module):
             X = self.centering(X, center, bid)
             X = self.normalize(X).float()
             X = X @ R + t
+            X = self.unnormalize(X)
+            X = self.uncentering(X, center, bid)
+            return X.squeeze().cpu().numpy()
+        return tran_func
+
+    def unnorm_transformation(self, center, bid):
+        def tran_func(X):
+            device = center.device
+            if isinstance(X, np.ndarray):
+                X = torch.from_numpy(X).reshape(-1, 3).to(device).float()
             X = self.unnormalize(X)
             X = self.uncentering(X, center, bid)
             return X.squeeze().cpu().numpy()
