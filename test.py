@@ -12,6 +12,8 @@ from data.dataset import test_complex_process
 from data.bio_parse import CA_INDEX, gen_docked_pdb
 from evaluate import compute_crmsd, compute_irmsd
 
+import time
+
 
 def main(args):
     # load config of the model
@@ -52,6 +54,8 @@ def main(args):
 
     a_crmsds, a_irmsds, u_crmsds, u_irmsds = [], [], [], []
 
+    start = time.time()
+
     for pdb_name in tqdm(test_pdbs):
         ligand_bound_path = os.path.join(test_path, 'complexes', pdb_name + '_l_b_COMPLEX.pdb')
         receptor_bound_path = os.path.join(test_path, 'complexes', pdb_name + '_r_b_COMPLEX.pdb')
@@ -84,6 +88,9 @@ def main(args):
 
         # print(f'[+] generating docked receptor pdb file: {pdb_name}')
         gen_docked_pdb(pdb_name, receptor_unbound_path, save_dir, dock_trans_list[0])
+
+    end = time.time()
+    print(f'total runtime: {end - start}')
 
     for name, val in zip(['CRMSD(aligned)', 'IRMSD(aligned)', 'CRMSD', 'IRMSD'],
                          [a_crmsds, a_irmsds, u_crmsds, u_irmsds]):

@@ -71,7 +71,7 @@ def quadratic_surface_mesh(params, unnorm_func):
     :param R, t: x' = Rx + t
     :return:
     """
-    N = 100
+    N = 50
 
     a, b, c, R, t = params
 
@@ -83,13 +83,14 @@ def quadratic_surface_mesh(params, unnorm_func):
 
     Z = -(a * X**2 + b * Y**2) / c
 
-    P = np.vstack((X.flatten(), Y.flatten(), Z.flatten()))
-    P = R @ P + t[:, None]  # (3, *)
+    undock_P = np.vstack((X.flatten(), Y.flatten(), Z.flatten()))
+    dock_P = R @ undock_P + t[:, None]  # (3, *)
 
     # unnormalize
-    P = unnorm_func(P.T)    # (*, 3)
+    undock_P = unnorm_func(undock_P.T)  # (*, 3)
+    dock_P = unnorm_func(dock_P.T)      # (*, 3)
 
-    return P
+    return undock_P, dock_P
 
 
 def main(args):
@@ -143,11 +144,13 @@ def main(args):
             # docking
             re_surface, li_surface, unnorm_trans_list = model.pred_elli_surface(**batch)    # (N, 3)
 
-        re_mesh = quadratic_surface_mesh(re_surface[0], unnorm_trans_list[0])
-        li_mesh = quadratic_surface_mesh(li_surface[0], unnorm_trans_list[0])
+        re_undock_mesh, re_dock_mesh = quadratic_surface_mesh(re_surface[0], unnorm_trans_list[0])
+        li_undock_mesh, li_dock_mesh = quadratic_surface_mesh(li_surface[0], unnorm_trans_list[0])
 
-        save_pdb(os.path.join(save_dir, f'{pdb_name}_re_mesh.pdb'), re_mesh)
-        save_pdb(os.path.join(save_dir, f'{pdb_name}_li_mesh.pdb'), li_mesh)
+        save_pdb(os.path.join(save_dir, f'{pdb_name}_re_mesh_ud.pdb'), re_undock_mesh)
+        save_pdb(os.path.join(save_dir, f'{pdb_name}_li_mesh_ud.pdb'), li_undock_mesh)
+        save_pdb(os.path.join(save_dir, f'{pdb_name}_re_mesh_d.pdb'), re_dock_mesh)
+        save_pdb(os.path.join(save_dir, f'{pdb_name}_li_mesh_d.pdb'), li_dock_mesh)
 
 
 def parse():
