@@ -19,7 +19,7 @@ def parse():
     parser = argparse.ArgumentParser(description='training')
 
     # data
-    parser.add_argument('--dataset', type=str, required=True, default='SabDab', choices=['SabDab', 'DB5.5', 'DIPS'])
+    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['SabDab', 'DB5.5', 'DIPS'])
     parser.add_argument('--train_set', type=str, required=True, help='path to train set')
     parser.add_argument('--valid_set', type=str, required=True, help='path to valid set')
 
@@ -42,7 +42,7 @@ def parse():
 
     # model
     parser.add_argument('--ckpt', type=str, default=None, help='Path to checkpoint')
-    parser.add_argument('--model_type', type=str, required=True, choices=['ExpDock'], help='Type of model')
+    parser.add_argument('--model_type', type=str, required=True, choices=['ElliDock'], help='Type of model')
     parser.add_argument('--embed_dim', type=int, default=64, help='dimension of residue/atom embedding')
     parser.add_argument('--hidden_size', type=int, default=128, help='dimension of hidden states')
     parser.add_argument('--dropout', type=float, default=0.1)
@@ -86,11 +86,11 @@ def main(args):
                          grad_clip=args.grad_clip,
                          save_topk=args.save_topk)
 
-    if args.model_type == 'ExpDock':
-        from trainer import ExpDockTrainer as Trainer
-        from module import ExpDock
+    if args.model_type == 'ElliDock':
+        from trainer import ElliDockTrainer as Trainer
+        from module import ElliDock
         if not args.ckpt:
-            model = ExpDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
+            model = ElliDock(args.embed_dim, args.hidden_size, k_neighbors=args.k_neighbors,
                             n_layers=args.n_layers, rbf_dim=args.rbf_dim, r_cut=args.r_cut,
                             dropout=args.dropout, mean=mean, std=std)
         else:

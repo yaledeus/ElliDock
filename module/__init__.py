@@ -1,1 +1,1 @@
-from .model import ExpDock
+from .model import ElliDock

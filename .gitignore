@@ -4,13 +4,9 @@ __pycache__
 .vscode/
 **build/
 
-*.txt
 *.pt
 *.png
 *.pkl
 *.svg
 *.log
 *.dill
-
-**benchmark5.5/
-**dock_example_db5.5/

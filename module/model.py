@@ -12,11 +12,11 @@ from .embed import ComplexGraph
 from .gnn import PINN, Gated_Equivariant_Block, RBF, coord2radial
 
 
-class ExpDock(nn.Module):
+class ElliDock(nn.Module):
     def __init__(self, embed_size, hidden_size, k_neighbors=9, n_layers=4,
                  rbf_dim=20, r_cut=1., att_heads=4, dropout=0.1,
                  mean=None, std=None) -> None:
-        super(ExpDock, self).__init__()
+        super(ElliDock, self).__init__()
         self.embed_size = embed_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers

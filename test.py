@@ -17,12 +17,13 @@ import time
 
 def main(args):
     # load config of the model
-    config_path = os.path.join(os.path.split(args.ckpt)[0], '..', 'train_config.json')
-    with open(config_path, 'r') as fin:
-        config = json.load(fin)
-
-    # model_type
-    model_type = config.get('model_type', 'ExpDock')
+    # config_path = os.path.join(os.path.split(args.ckpt)[0], '..', 'train_config.json')
+    # with open(config_path, 'r') as fin:
+    #     config = json.load(fin)
+    #
+    # # model_type
+    # model_type = config.get('model_type', 'ElliDock')
+    model_type = 'ElliDock'
     print(f'Model type: {model_type}')
 
     # load test set
