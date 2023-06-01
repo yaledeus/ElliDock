@@ -3,6 +3,7 @@ __pycache__
 .idea/
 .vscode/
 **build/
+**train_pdb/
 
 *.pt
 *.png

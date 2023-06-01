@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import cdist
 import os
+import re
 
 parser = PDBParser(QUIET=True)
 AA_NAMES_1 = tuple(IUPACData.protein_letters_3to1.values())
@@ -207,7 +208,7 @@ def DIPS_pdb_parse(dill_path):
 
     re_seq = {}
     re_coord = {}
-    re_len = 0
+    re_rid = {}
 
     for residue in receptor.groupby(by=['chain', 'residue']):
         chain_name, res_idx = residue[0]
@@ -217,8 +218,9 @@ def DIPS_pdb_parse(dill_path):
         if not res_name in AA_NAMES_3:
             continue
         if not chain_name in re_seq:
-            re_seq[chain_name] = ''
+            re_seq[chain_name] = []
             re_coord[chain_name] = []
+            re_rid[chain_name] = []
         backbone_coord = []
         normal_res_flag = True
         for idx in range(len(BACKBONE_ATOM)):
@@ -231,16 +233,21 @@ def DIPS_pdb_parse(dill_path):
             backbone_coord.append([df.loc[ridx, 'x'], df.loc[ridx, 'y'], df.loc[ridx, 'z']])
         if not normal_res_flag:
             continue
-        re_seq[chain_name] += aa_3to1(res_name)
+        re_seq[chain_name].append(aa_3to1(res_name))
         re_coord[chain_name].append(backbone_coord)
-        re_len += 1
+        re_rid[chain_name].append(re.sub(r'\D', '', residue[0][1]))
+
+    for chain_name in re_rid.keys():
+        sorted_tuples = sorted(zip(re_rid[chain_name], re_seq[chain_name], re_coord[chain_name]))
+        re_seq[chain_name] = ''.join([item[1] for item in sorted_tuples])
+        re_coord[chain_name] = [item[2] for item in sorted_tuples]
 
     for key in re_coord.keys():
         re_coord[key] = np.asarray(re_coord[key]).tolist()
 
     li_seq = {}
     li_coord = {}
-    li_len = 0
+    li_rid = {}
 
     for residue in ligand.groupby(by=['chain', 'residue']):
         chain_name, res_idx = residue[0]
@@ -250,8 +257,9 @@ def DIPS_pdb_parse(dill_path):
         if not res_name in AA_NAMES_3:
             continue
         if not chain_name in li_seq:
-            li_seq[chain_name] = ''
+            li_seq[chain_name] = []
             li_coord[chain_name] = []
+            li_rid[chain_name] = []
         backbone_coord = []
         normal_res_flag = True
         for idx in range(len(BACKBONE_ATOM)):
@@ -264,9 +272,14 @@ def DIPS_pdb_parse(dill_path):
             backbone_coord.append([df.loc[ridx, 'x'], df.loc[ridx, 'y'], df.loc[ridx, 'z']])
         if not normal_res_flag:
             continue
-        li_seq[chain_name] += aa_3to1(res_name)
+        li_seq[chain_name].append(aa_3to1(res_name))
         li_coord[chain_name].append(backbone_coord)
-        li_len += 1
+        li_rid[chain_name].append(re.sub(r'\D', '', residue[0][1]))
+
+    for chain_name in li_rid.keys():
+        sorted_tuples = sorted(zip(li_rid[chain_name], li_seq[chain_name], li_coord[chain_name]))
+        li_seq[chain_name] = ''.join([item[1] for item in sorted_tuples])
+        li_coord[chain_name] = [item[2] for item in sorted_tuples]
 
     for key in li_coord.keys():
         li_coord[key] = np.asarray(li_coord[key]).tolist()
