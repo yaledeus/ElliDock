@@ -555,7 +555,12 @@ class CoordNomralizer(nn.Module):
         return X
 
     def uncentering(self, X, center, bid):
-        X = X + center[bid]
+        if X.ndim == 3:   # (N, n_channel, 3)
+            X = X + center[bid].unsqueeze(1)
+        elif X.ndim == 2: # (N, 3)
+            X = X + center[bid]
+        else:
+            raise ValueError
         return X
 
     def normalize(self, X):

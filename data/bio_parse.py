@@ -235,7 +235,7 @@ def DIPS_pdb_parse(dill_path):
             continue
         re_seq[chain_name].append(aa_3to1(res_name))
         re_coord[chain_name].append(backbone_coord)
-        re_rid[chain_name].append(re.sub(r'\D', '', residue[0][1]))
+        re_rid[chain_name].append(int(re.sub(r'\D', '', residue[0][1])))
 
     for chain_name in re_rid.keys():
         sorted_tuples = sorted(zip(re_rid[chain_name], re_seq[chain_name], re_coord[chain_name]))
@@ -274,7 +274,7 @@ def DIPS_pdb_parse(dill_path):
             continue
         li_seq[chain_name].append(aa_3to1(res_name))
         li_coord[chain_name].append(backbone_coord)
-        li_rid[chain_name].append(re.sub(r'\D', '', residue[0][1]))
+        li_rid[chain_name].append(int(re.sub(r'\D', '', residue[0][1])))
 
     for chain_name in li_rid.keys():
         sorted_tuples = sorted(zip(li_rid[chain_name], li_seq[chain_name], li_coord[chain_name]))
