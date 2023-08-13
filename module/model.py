@@ -156,8 +156,10 @@ class ElliDock(nn.Module):
 
         node_feat, vec_feat = self.gated_equiv_block(node_feat, vec_feat)
 
-        # fit loss && dock loss & rmsd loss & stable loss & match loss
+        # fit loss && overlap loss && refinement loss && dock loss & rmsd loss & stable loss
         fit_loss = 0.
+        overlap_loss = 0.
+        ref_loss = 0.
         dock_loss = 0.
         rmsd_loss = 0.
         stable_loss = 0.
@@ -186,14 +188,14 @@ class ElliDock(nn.Module):
             ).sum(dim=0)    # (3 + 1,)
 
             # paraboloid constrain
-            eigen = inv1[:3] + inv2[:3]
-            eigen = eigen * torch.sgn(eigen) # (+, +, +)
-            Lambda = torch.zeros(3).to(device)
+            re_lambda = torch.zeros(3).to(device)
+            li_lambda = torch.zeros(3).to(device)
             re_prim = torch.zeros(3).to(device)
             li_prim = torch.zeros(3).to(device)
-            Lambda[:2] = eigen[:2]
-            re_prim[2] = -eigen[2]
-            li_prim[2] =  eigen[2]
+            re_lambda[:2] = F.softplus(inv1[:2])
+            li_lambda[:2] = F.softplus(inv2[:2])
+            re_prim[2] = -F.softplus(inv1[2])
+            li_prim[2] =  F.softplus(inv2[2])
 
             # x-y refine
             theta = inv1[3] - inv2[3]
@@ -229,28 +231,24 @@ class ElliDock(nn.Module):
             X1 = X[receptor_idx] @ R1 + t1
             X2 = X[ligand_idx] @ R2 + t2
 
-            key_fit1 = P1**2 @ Lambda + P1 @ re_prim
-            key_fit2 = P2**2 @ Lambda + P2 @ li_prim
+            key_fit1 = P1**2 @ re_lambda + P1 @ re_prim
+            key_fit2 = P2**2 @ li_lambda + P2 @ li_prim
             # intersection constrain
-            re_fit_re_surf = X1**2 @ Lambda + X1 @ re_prim
-            li_fit_re_surf = X2**2 @ Lambda + X2 @ re_prim
-            re_fit_li_surf = X1**2 @ Lambda + X1 @ li_prim
-            li_fit_li_surf = X2**2 @ Lambda + X2 @ li_prim
+            re_fit_re_surf = X1**2 @ re_lambda + X1 @ re_prim
+            li_fit_li_surf = X2**2 @ li_lambda + X2 @ li_prim
 
             # keypoint fitness
             fit_loss += F.smooth_l1_loss(key_fit1, torch.zeros(P1.shape[0]).to(device))
             fit_loss += F.smooth_l1_loss(key_fit2, torch.zeros(P2.shape[0]).to(device))
             # z-span fitness
-            fit_loss += self.out_span_loss(P1[:, 2], low=0.,  high=threshold)
-            fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=0.)
+            fit_loss += self.out_span_loss(P1[:, 2], low=-threshold, high=threshold)
+            fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=threshold)
             # avoid intersection
-            fit_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf), torch.zeros(X1.shape[0]).to(device))
-            fit_loss += F.smooth_l1_loss(torch.relu(-li_fit_re_surf), torch.zeros(X2.shape[0]).to(device))
-            fit_loss += F.smooth_l1_loss(torch.relu( li_fit_li_surf), torch.zeros(X2.shape[0]).to(device))
-            fit_loss += F.smooth_l1_loss(torch.relu(-re_fit_li_surf), torch.zeros(X1.shape[0]).to(device))
+            overlap_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf), torch.zeros(X1.shape[0]).to(device))
+            overlap_loss += F.smooth_l1_loss(torch.relu( li_fit_li_surf), torch.zeros(X2.shape[0]).to(device))
             # x-y span fitness
             _, R_ref_gt, _ = kabsch_torch(P1[:, :2], P2[:, :2])
-            fit_loss += (R_ref - R_ref_gt).pow(2).mean()
+            ref_loss += (R_ref - R_ref_gt).pow(2).mean()
 
             R = R1 @ R_ref_3d @ R2.T
             t = (t1 @ R_ref_3d - t2) @ R2.T
@@ -264,13 +262,15 @@ class ElliDock(nn.Module):
 
         # normalize
         fit_loss /= bs
+        overlap_loss /= bs
+        ref_loss /= bs
         dock_loss /= bs
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = 0.5 * fit_loss + dock_loss
+        loss = fit_loss + overlap_loss + ref_loss + dock_loss
 
-        return loss, (fit_loss, dock_loss, stable_loss, rmsd_loss)
+        return loss, (fit_loss, overlap_loss, ref_loss, dock_loss, stable_loss, rmsd_loss)
 
     def dock(self, X, S, RP, Seg, center, bid, **kwargs):
         device = X.device

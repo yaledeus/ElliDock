@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from data import DBDataset, DIPSDataset
+from data import DBDataset, DIPSDataset, SabDabDataset
 from data.bio_parse import CA_INDEX, gen_docked_pdb
 from evaluate import compute_crmsd, compute_irmsd
 from module.model import sample_transformation
@@ -34,6 +34,9 @@ def main(args):
     elif args.dataset == 'DIPS':
         test_set = DIPSDataset(args.test_set)
         collate_fn = DIPSDataset.collate_fn
+    elif args.dataset == 'SabDab':
+        test_set = SabDabDataset(args.test_set)
+        collate_fn = SabDabDataset.collate_fn
     else:
         raise ValueError(f'model type {model_type} not implemented')
 
