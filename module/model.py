@@ -164,7 +164,8 @@ class ElliDock(nn.Module):
         rmsd_loss = 0.
         stable_loss = 0.
 
-        threshold = 1. / torch.mean(self.normalizer.std)
+        # threshold = 1. / torch.mean(self.normalizer.std)
+        threshold = 0.
 
         for i in range(bs):
             receptor_idx = torch.logical_and(Seg == 0, bid == i)
@@ -244,8 +245,8 @@ class ElliDock(nn.Module):
             fit_loss += self.out_span_loss(P1[:, 2], low=-threshold, high=threshold)
             fit_loss += self.out_span_loss(P2[:, 2], low=-threshold, high=threshold)
             # avoid intersection
-            overlap_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf), torch.zeros(X1.shape[0]).to(device))
-            overlap_loss += F.smooth_l1_loss(torch.relu( li_fit_li_surf), torch.zeros(X2.shape[0]).to(device))
+            overlap_loss += F.smooth_l1_loss(torch.relu( re_fit_re_surf).sqrt(), torch.zeros(X1.shape[0]).to(device))
+            overlap_loss += F.smooth_l1_loss(torch.relu( li_fit_li_surf).sqrt(), torch.zeros(X2.shape[0]).to(device))
             # x-y span fitness
             _, R_ref_gt, _ = kabsch_torch(P1[:, :2], P2[:, :2])
             ref_loss += (R_ref - R_ref_gt).pow(2).mean()
@@ -268,7 +269,7 @@ class ElliDock(nn.Module):
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = fit_loss + overlap_loss + ref_loss + dock_loss
+        loss = fit_loss + overlap_loss + 0.5 * ref_loss + dock_loss
 
         return loss, (fit_loss, overlap_loss, ref_loss, dock_loss, stable_loss, rmsd_loss)
 
@@ -443,10 +444,6 @@ class ElliDock(nn.Module):
                 ).unsqueeze(1)
             ).sum(dim=0)  # (3 + 1,)
 
-            # paraboloid constrain
-            eigen = inv1[:3] + inv2[:3]
-            eigen = eigen * torch.sgn(eigen)  # (+, +, +)
-
             # x-y refine
             theta = inv1[3] - inv2[3]
             R_ref = torch.tensor([[torch.cos(theta), torch.sin(theta)],
@@ -479,9 +476,9 @@ class ElliDock(nn.Module):
             R = R1 @ R_ref_3d @ R2.T
             t = (t1 @ R_ref_3d - t2) @ R2.T
 
-            re_surface.append((eigen[0].cpu().item(), eigen[1].cpu().item(), -eigen[2].cpu().item(),
+            re_surface.append((F.softplus(inv1[0]).cpu().item(), F.softplus(inv1[1]).cpu().item(), -F.softplus(inv1[2]).cpu().item(),
                                R2.cpu().numpy(), li_t_pri.cpu().numpy()))
-            li_surface.append((eigen[0].cpu().item(), eigen[1].cpu().item(),  eigen[2].cpu().item(),
+            li_surface.append((F.softplus(inv2[0]).cpu().item(), F.softplus(inv2[1]).cpu().item(),  F.softplus(inv2[2]).cpu().item(),
                                R2.cpu().numpy(), li_t_pri.cpu().numpy()))
             unnorm_trans_list.append(self.normalizer.unnorm_transformation(center, i))
 
