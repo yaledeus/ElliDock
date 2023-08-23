@@ -31,6 +31,8 @@ def main(args):
         test_path = './test_sets_pdb/db5_test_random_transformed'
     elif args.dataset == 'DIPS':
         test_path = './test_sets_pdb/dips_test_random_transformed'
+    elif args.dataset == 'SabDab':
+        test_path = './test_sets_pdb/sabdab_test_random_transformed'
     else:
         raise ValueError(f'model type {model_type} not implemented')
 
@@ -93,6 +95,15 @@ def main(args):
     end = time.time()
     print(f'total runtime: {end - start}')
 
+    data = {
+        "model_type": model_type.upper(),
+        "IRMSD": a_irmsds,
+        "CRMSD": a_crmsds
+    }
+    data = json.dumps(data, indent=4)
+    with open(os.path.join(save_dir, 'data.json'), 'w') as fp:
+        fp.write(data)
+
     for name, val in zip(['CRMSD(aligned)', 'IRMSD(aligned)', 'CRMSD', 'IRMSD'],
                          [a_crmsds, a_irmsds, u_crmsds, u_irmsds]):
         print(f'{name} median: {np.median(val)}', end=' ')
@@ -102,7 +113,7 @@ def main(args):
 
 def parse():
     parser = argparse.ArgumentParser(description='Docking given antibody-antigen complex')
-    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['DB5.5', 'DIPS'])
+    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['SabDab', 'DB5.5', 'DIPS'])
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint')
     parser.add_argument('--save_dir', type=str, default=None, help='Directory to save generated antibodies')
     parser.add_argument('--gpu', type=int, default=-1, help='GPU to use, -1 for cpu')

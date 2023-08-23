@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import argparse
 import os
+import json
 from tqdm import tqdm
 
 import numpy as np
@@ -109,6 +110,15 @@ def main(args):
     end = time.time()
     print(f'total runtime: {end - start}')
 
+    data = {
+        "model_type": model_type.upper(),
+        "IRMSD": a_irmsds,
+        "CRMSD": a_crmsds
+    }
+    data = json.dumps(data, indent=4)
+    with open(os.path.join(save_dir, 'data.json'), 'w') as fp:
+        fp.write(data)
+
     for name, val in zip(['CRMSD(aligned)', 'IRMSD(aligned)', 'CRMSD', 'IRMSD'],
                          [a_crmsds, a_irmsds, u_crmsds, u_irmsds]):
         print(f'{name} median: {np.median(val)}', end=' ')
@@ -118,7 +128,7 @@ def main(args):
 
 def parse():
     parser = argparse.ArgumentParser(description='Docking given antibody-antigen complex')
-    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['DB5.5', 'DIPS'])
+    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['SabDab', 'DB5.5', 'DIPS'])
     parser.add_argument('--test_set', type=str, required=True, help='path to test set')
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint')
     parser.add_argument('--save_dir', type=str, default=None, help='Directory to save generated antibodies')
