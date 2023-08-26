@@ -251,7 +251,7 @@ class ElliDock(nn.Module):
             )
             # x-y span fitness
             _, R_ref_gt, _ = kabsch_torch(P1[:, :2], P2[:, :2])
-            ref_loss += F.mse_loss(R_ref, R_ref_gt)
+            ref_loss += F.mse_loss(R_ref, R_ref_gt.detach())
 
             R = R1 @ R_ref_3d @ R2.T
             t = (t1 @ R_ref_3d - t2) @ R2.T

@@ -10,6 +10,7 @@ import torch
 
 from data.dataset import test_complex_process
 from data.bio_parse import CA_INDEX, gen_docked_pdb
+from utils.geometry import protein_surface_intersection
 from evaluate import compute_crmsd, compute_irmsd
 
 import time
@@ -55,7 +56,7 @@ def main(args):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    a_crmsds, a_irmsds, u_crmsds, u_irmsds = [], [], [], []
+    a_crmsds, a_irmsds, u_crmsds, u_irmsds, intersections = [], [], [], [], []
 
     start = time.time()
 
@@ -78,16 +79,20 @@ def main(args):
 
         Seg = batch['Seg'].cpu().numpy()
         dock_X = dock_X.cpu().numpy()
+        dock_X_re, dock_X_li = torch.tensor(dock_X[Seg == 0]), torch.tensor(dock_X[Seg == 1])
         assert dock_X.shape[0] == gt_X.shape[0], 'coordinates dimension mismatch'
 
         aligned_crmsd = compute_crmsd(dock_X, gt_X, aligned=False)
         aligned_irmsd = compute_irmsd(dock_X, gt_X, Seg, aligned=False)
         unaligned_crmsd = compute_crmsd(dock_X, gt_X, aligned=True)
         unaligned_irmsd = compute_irmsd(dock_X, gt_X, Seg, aligned=True)
+        intersection = float(protein_surface_intersection(dock_X_re, dock_X_li).relu().mean() +
+            protein_surface_intersection(dock_X_li, dock_X_re).relu().mean())
         a_crmsds.append(aligned_crmsd)
         a_irmsds.append(aligned_irmsd)
         u_crmsds.append(unaligned_crmsd)
         u_irmsds.append(unaligned_irmsd)
+        intersections.append(intersection)
 
         # print(f'[+] generating docked receptor pdb file: {pdb_name}')
         gen_docked_pdb(pdb_name, receptor_unbound_path, save_dir, dock_trans_list[0])
@@ -98,7 +103,8 @@ def main(args):
     data = {
         "model_type": model_type.upper(),
         "IRMSD": a_irmsds,
-        "CRMSD": a_crmsds
+        "CRMSD": a_crmsds,
+        "intersection": intersections
     }
     data = json.dumps(data, indent=4)
     with open(os.path.join(save_dir, 'data.json'), 'w') as fp:

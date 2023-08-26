@@ -246,7 +246,7 @@ def kabsch_numpy(P: np.ndarray, Q: np.ndarray):
 
 def protein_surface_intersection(X, Y, sigma=25, gamma=10):
     """
-    :param X: point cloud  to be referenced, (N, 3)
+    :param X: point cloud to be referenced, (N, 3)
     :param Y: point cloud to be tested whether it is outside the protein, (M, 3)
     :param sigma, gamma: parameter
     :return: (M,)
