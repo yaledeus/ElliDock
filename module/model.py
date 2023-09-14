@@ -488,6 +488,8 @@ class ElliDock(nn.Module):
 
         return re_surface, li_surface, unnorm_trans_list
 
+ExpDock = ElliDock # alias
+
 
 def constrain_refine_hidden_space(H_r, H_l, X_r, X_l):
     """
