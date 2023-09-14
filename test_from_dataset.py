@@ -18,14 +18,7 @@ import time
 
 
 def main(args):
-    # load config of the model
-    # config_path = os.path.join(os.path.split(args.ckpt)[0], '..', 'train_config.json')
-    # with open(config_path, 'r') as fin:
-    #     config = json.load(fin)
-    #
-    # # model_type
-    # model_type = config.get('model_type', 'ElliDock')
-    model_type = 'ElliDock'
+    model_type = args.model_type
     print(f'Model type: {model_type}')
 
     # load test set
@@ -39,7 +32,7 @@ def main(args):
         test_set = SabDabDataset(args.test_set)
         collate_fn = SabDabDataset.collate_fn
     else:
-        raise ValueError(f'model type {model_type} not implemented')
+        raise ValueError(f'Dataset {args.dataset} not implemented')
 
     test_loader = DataLoader(test_set, batch_size=1,
                              num_workers=8,
@@ -128,6 +121,7 @@ def main(args):
 
 def parse():
     parser = argparse.ArgumentParser(description='Docking given antibody-antigen complex')
+    parser.add_argument('--model_type', type=str, default='ElliDock', choices=['ElliDock'])
     parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['SabDab', 'DB5.5', 'DIPS'])
     parser.add_argument('--test_set', type=str, required=True, help='path to test set')
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint')
