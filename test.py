@@ -108,11 +108,15 @@ def main(args):
             gt = test_complex_process(ligand_bound_path, receptor_bound_path)
             gt_X = gt['X'][:, CA_INDEX].numpy()
             # inference
-            subprocess.run(f'cd {hdock_dir} && ./hdock {receptor_tmp_path} {ligand_tmp_path} -out Hdock.out', shell=True)
-            subprocess.run(f'cd {hdock_dir} && ./createpl Hdock.out top100.pdb -nmax 100 -complex -models', shell=True)
-            dock_X = BaseComplex.from_pdb(
-                os.path.join(hdock_dir, 'model_1.pdb'), ligand_bound_path
-            ).ligand_coord()[:, CA_INDEX]
+            try:
+                subprocess.run(f'cd {hdock_dir} && ./hdock {receptor_tmp_path} {ligand_tmp_path} -out Hdock.out', shell=True)
+                subprocess.run(f'cd {hdock_dir} && ./createpl Hdock.out top100.pdb -nmax 100 -complex -models', shell=True)
+                dock_X = BaseComplex.from_pdb(
+                    os.path.join(hdock_dir, 'model_1.pdb'), ligand_bound_path
+                ).ligand_coord()[:, CA_INDEX]
+            except:
+                print(f'Docking on {pdb_name} failed, skip.')
+                continue
             Seg = gt['Seg'].numpy()
             dock_X_re, dock_X_li = torch.tensor(dock_X[Seg == 0]), torch.tensor(dock_X[Seg == 1])
             assert dock_X.shape[0] == gt_X.shape[0], 'coordinates dimension mismatch'

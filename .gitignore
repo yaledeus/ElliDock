@@ -4,6 +4,7 @@ __pycache__
 .vscode/
 **build/
 **train_pdb/
+multimer_results/
 
 *.pt
 *.png
