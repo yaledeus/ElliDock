@@ -74,7 +74,7 @@ def main(args):
                 dock_X, dock_trans_list = model.dock(**batch)    # (N, 3)
 
             Seg = batch['Seg'].cpu().numpy()
-            dock_X = dock_X['X'][:, CA_INDEX].numpy()
+            dock_X = dock_X.cpu().numpy()
             dock_X_re, dock_X_li = torch.tensor(dock_X[Seg == 0]), torch.tensor(dock_X[Seg == 1])
             assert dock_X.shape[0] == gt_X.shape[0], 'coordinates dimension mismatch'
 

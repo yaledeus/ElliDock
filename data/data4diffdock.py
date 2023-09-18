@@ -80,7 +80,7 @@ def sabdab_for_diffdock(data_dir):
 
 
 if __name__ == "__main__":
-    # preprocess('sabdab')
-    import sys
-    arg = sys.argv[1]
-    sabdab_for_diffdock(arg)
+    preprocess('sabdab')
+    # import sys
+    # arg = sys.argv[1]
+    # sabdab_for_diffdock(arg)

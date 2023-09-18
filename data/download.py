@@ -93,9 +93,12 @@ def read_sabdab(fpath, n_cpu):
     head_mapping = {
         'heavy_chain': head2idx['Hchain'],
         'light_chain': head2idx['Lchain'],
-        'antigen_chains': head2idx['antigen_chain']
+        'antigen_chains': head2idx['antigen_chain'],
+        'date': head2idx['date']
     }
     for entry in entries:
+        if int(entry[head2idx['date']][-2:]) <= 21:     # 2022~
+            continue
         pdb = entry[head2idx['pdb']]
         if pdb in pdb2idx:  # reserve the one with better resolution
             continue
