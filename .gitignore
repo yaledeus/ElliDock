@@ -3,8 +3,6 @@ __pycache__
 .idea/
 .vscode/
 **build/
-**train_pdb/
-multimer_results/
 
 *.pt
 *.png

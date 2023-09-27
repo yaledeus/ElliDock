@@ -1,10 +1,4 @@
 #!/bin/zsh
-##########################################################################
-# File Name: download_and_split.sh
-# Author: yaledeus
-# mail: yaledeus@gmail.com
-# Created Time: Friday, March 10, 2023 PM09:34:40 HKT
-#########################################################################
 
 while getopts "d:" arg
 do
@@ -47,6 +41,6 @@ python -m split \
     --out_dir ${PDB_DIR} \
     --valid_ratio 0.1 \
     --test_ratio 0 \
-    --filter 1*1 \
+    --filter 111 \
     --rabd ${PDB_DIR}/rabd_all.json
 

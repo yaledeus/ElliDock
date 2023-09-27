@@ -288,8 +288,8 @@ def DIPS_pdb_parse(dill_path):
 
 
 ### generate docked pdb file
-def gen_docked_pdb(pdb_name, src_path, dst_path, trans_func):
-    structure = parser.get_structure(pdb_name, src_path)
+def gen_docked_pdb(src_path, dst_path, trans_func):
+    structure = parser.get_structure('annoym', src_path)
     for model in structure:
         for chain in model:
             for residue in chain:
@@ -298,7 +298,7 @@ def gen_docked_pdb(pdb_name, src_path, dst_path, trans_func):
                     atom.set_coord(trans_func(atom_coord))
     io = PDBIO()
     io.set_structure(structure)
-    io.save(os.path.join(dst_path, f'{pdb_name}_r_d.pdb'))
+    io.save(dst_path)
 
 
 class BaseComplex:

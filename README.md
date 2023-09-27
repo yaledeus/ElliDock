@@ -1,6 +1,6 @@
 # ElliDock
 
-### Keypoint-Free Rigid Protein Docking via Equivariant Elliptic-Paraboloid Interfaces
+### Rigid Protein-Protein Docking via Equivariant Elliptic-Paraboloid Interface Prediction
 
 ### Dependencies
 
@@ -20,64 +20,63 @@ https://zlab.umassmed.edu/benchmark/ or https://github.com/drorlab/DIPS
 
 The raw PDB files of DB5.5 dataset are in the directory `./data/benchmark5.5/structures`, with `train/val/test.txt` in the directory `./data/benchmark5.5` as the exact dataset split for use.
 
-### DIPS data
+### SAbDab data
 
-Download the dataset (see `https://github.com/drorlab/DIPS` and `https://github.com/amorehead/DIPS-Plus`) :
+We use [SAbDab](http://opig.stats.ox.ac.uk/webapps/newsabdab/sabdab/) as the training set and [RAbD](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1006112) as the test set. SAbDab is a database of antibody structures that updates on a weekly basis, and RAbD is a curated benchmark on antibody design. We have provided the summary data for SAbDab and RAbD in the summaries folder, please further download all structure data (renumbered with IMGT in PDB format) from [the downloads entry of the offical website of SAbDab](http://opig.stats.ox.ac.uk/webapps/newsabdab/sabdab/search/?all=true). Ensure the structure data renumbered by imgt is located at `{PDB_DIR}/all_structures/imgt`, while `PDB_DIR` is up to you to choose.
 
-```
-mkdir -p ./DIPS/raw/pdb
-
-rsync -rlpt -v -z --delete --port=33444 \
-rsync.rcsb.org::ftp_data/biounit/coordinates/divided/ ./DIPS/raw/pdb
-```
-
-Follow the following first steps from `https://github.com/amorehead/DIPS-Plus` :
+We have provided the script in `data/download_and_split.sh` to preprocess and split the data of SAbDab. Please run the following command to get your data prepared:
 
 ```bash
-# Create data directories (if not already created):
-mkdir project/datasets/DIPS/raw project/datasets/DIPS/raw/pdb project/datasets/DIPS/interim project/datasets/DIPS/interim/external_feats project/datasets/DIPS/final project/datasets/DIPS/final/raw project/datasets/DIPS/final/processed
-
-# Download the raw PDB files:
-rsync -rlpt -v -z --delete --port=33444 --include='*.gz' --include='*.xz' --include='*/' --exclude '*' \
-rsync.rcsb.org::ftp_data/biounit/coordinates/divided/ project/datasets/DIPS/raw/pdb
-
-# Extract the raw PDB files:
-python3 project/datasets/builder/extract_raw_pdb_gz_archives.py project/datasets/DIPS/raw/pdb
-
-# Process the raw PDB data into associated pair files:
-python3 project/datasets/builder/make_dataset.py project/datasets/DIPS/raw/pdb project/datasets/DIPS/interim --num_cpus 28 --source_type rcsb --bound
-
-# Apply additional filtering criteria:
-python3 project/datasets/builder/prune_pairs.py project/datasets/DIPS/interim/pairs project/datasets/DIPS/filters project/datasets/DIPS/interim/pairs-pruned --num_cpus 28
+cd data && bash download_and_split.sh -d {PDB_DIR}
 ```
 
-The raw data `DIPS/data/DIPS/interim/pairs-pruned/` can also downloaded directly from https://www.dropbox.com/s/sqknqofy58nlosh/DIPS.zip?dl=0.
-
-We then use the `pairs-postprocessed-*.txt` files in `DIPS/data/DIPS/interim/pairs-pruned/` for the train/valid/test sets.
+If all goes well, you will see `train/valid/test.json` in the `PDB_DIR` directory.
 
 ### Training
 
-The training bash file `train_db5.sh` and `train_dips.sh` are given. You can begin your training process as below:
+The training bash file `train_db5.sh` and `train_sabdab.sh` are given. You can begin your training process as below:
 
 ```bash
 # for DB5.5
 GPU=0 bash train_db5.sh
-# for DIPS
-GPU=0 bash train_dips.sh
+# for SAbDab
+GPU=0 bash train_sabdab.sh
 ```
 
-The only parameter you should change is `DATA_DIR` in `train_dips.sh`, which should be the storage directory of DIPS data (the path will be like `*/pairs-pruned`). You can change other hyperparameters for training in `*.sh` files.
+you must change `DATA_DIR` in `train_sabdab.sh`, which should be your own `PDB_DIR`. You can change other hyperparameters for training in `*.sh` files.
+
+### Evaluation
+
+#### TM-Score
+
+We have provided the source cpp code `TMscore.cpp` in `evaluate`, please run:
+
+```bash
+cd evaluate && g++ -O3 -o TMscore TMscore.cpp
+```
+
+#### DockQ
+
+We use the public tool from Github (https://github.com/bjornwallner/DockQ) to evaluate DockQ, please run:
+
+```
+cd evaluate && git clone https://github.com/bjornwallner/DockQ.git
+```
 
 ### Inference
 
-Test sets used in our paper are given in `test_sets_pdb/`. Ground truth (bound) structures are in `test_sets_pdb/dips_test_random_transformed/complexes/`, while unbound structures (i.e., randomly rotated and translated ligands and receptors) are in `test_sets_pdb/dips_test_random_transformed/random_transformed/` and you should precisely use those for your predictions (or at least the **receptors**, while using the ground truth ligands like we do in `test.py`).
+Test sets used in our paper are given in `test_sets_pdb/`. Given `dataset` in `{db5, sabdab}`, Ground truth (bound) structures are in `test_sets_pdb/{dataset}_test_random_transformed/complexes/`, while unbound structures (i.e., randomly rotated and translated ligands and receptors) are in `test_sets_pdb/{dataset}_test_random_transformed/random_transformed/` and you should precisely use those for your predictions.
 
-**NOTE THAT** keep receptor or ligand position fixed and predict the transformation of the other protein will not affect the results.
-
-The best validated model of training on DB5.5 dataset only (`DB5_best_no_finetune.ckpt`) and fine-tuned from DIPS dataset (`DB5_best_finetune.ckpt`) are provided in the directory `checkpoints`. You can inference docked receptors and test with metrics like this:
+The best validated model on DB5.5 (`db5_best.ckpt`) and the best validated model on SAbDab (`sabdab_best.ckpt`) have been stored in `checkpoints`. You can inference docked complexes and obtain the same metrics listed in our paper with the following command:
 
 ```bash
-python3 test.py --dataset DB5.5 --gpu 0 --ckpt ./checkpoints/DB5_best_finetune.ckpt
+python test.py --dataset DB5 --gpu {GPU} --ckpt ./checkpoints/db5_best.ckpt
 ```
 
-After inference the docked receptor PDB files are saved in `checkpoints/DB5_best_finetune_results`.
+After the inference step, the docked complex PDB files are saved in `checkpoints/db5_best_results`.
+
+To obtain metrics of other methods, please run:
+
+```bash
+python test.py --model_type {HDock/Multimer/DiffDock-PP/EquiDock} --dataset {DB5/SAbDab} --gpu {GPU}
+```

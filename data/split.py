@@ -183,7 +183,7 @@ def main(args):
     cmd = f'mmseqs createdb {fasta} {db}'
     exec_mmseq(cmd)
     db_clustered = os.path.join(tmp_dir, 'DB_clu')
-    cmd = f'mmseqs cluster {db} {db_clustered} {tmp_dir} --min-seq-id 0.9'  # similarity > 0.9 in the same cluster
+    cmd = f'mmseqs cluster {db} {db_clustered} {tmp_dir} --min-seq-id 0.8'  # similarity > 0.8 in the same cluster
     res = exec_mmseq(cmd)
     num_clusters = re.findall(r'Number of clusters: (\d+)', res)
     if len(num_clusters):

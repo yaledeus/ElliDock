@@ -20,12 +20,12 @@ def preprocess(dataset):
         compl = BaseComplex.from_pdb(ligand_gt, receptor_gt)
         seq = ''.join([AA_NAMES_1[a_idx] for a_idx in compl.receptor_seq()]) + ':' + \
               ''.join([AA_NAMES_1[a_idx] for a_idx in compl.ligand_seq()])
-        data.append([line.strip(), seq, 'test'])
+        data.append([line.strip(), seq])
     with open(dst_csv, 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['pdb', 'seq', 'split'])
+        writer.writerow(['id', 'sequence'])
         writer.writerows(data)
 
 
 if __name__ == "__main__":
-    preprocess('sabdab')
+    preprocess('db5')

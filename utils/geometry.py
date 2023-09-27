@@ -493,8 +493,10 @@ B = torch.tensor([[0, 0, 0], [1, 0, 0], [0, 1, 0]]).float()
 print(f"maximum area of point cloud B should be 0.5: {max_triangle_area(B)}")
 """
 
-def to_rotation_matrix(vecs):
-    V, S, W = torch.linalg.svd(vecs)
+
+def to_rotation_matrix(matrix):
+
+    V, S, W = torch.linalg.svd(matrix)
 
     d = (torch.linalg.det(V) * torch.linalg.det(W)) < 0.0
 
@@ -504,7 +506,38 @@ def to_rotation_matrix(vecs):
 
     R: torch.Tensor = V_R @ W
 
+    # A = matrix if torch.det(matrix) > 0 else -matrix
+    #
+    # U = A @ A.T
+    #
+    # eigenvalues, eigenvectors = torch.linalg.eigh(U)
+    #
+    # P = eigenvectors @ torch.diag_embed(eigenvalues.sqrt()) @ eigenvectors.T
+    #
+    # R = P.inverse() @ A
+
     return R
+
+"""
+### test rotation equivariance
+q = rand_rotation_matrix()
+A = torch.randn(3, 3)
+R = to_rotation_matrix(A)
+print(f"q: {q}")
+print(f"A: {A}")
+print(f"R: {R}")
+print(f"R^T @ R: {R.T @ R}")
+print(f"R @ R^T: {R @ R.T}")
+print(f"det(R): {torch.det(R)}")
+A_new = q @ A
+R_new = to_rotation_matrix(A_new)
+print(f"A_new: {A_new}")
+print(f"R_new: {R_new}")
+print(f"R_new^T @ R_new: {R_new.T @ R_new}")
+print(f"R_new @ R_new^T: {R_new @ R_new.T}")
+print(f"det(R): {torch.det(R_new)}")
+print(f"R_new - q @ R: {R_new - q @ R}")
+"""
 
 
 def modified_gram_schmidt(vecs):
