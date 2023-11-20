@@ -144,15 +144,14 @@ def main(args):
             # inference
             try:
                 subprocess.run(f'cd {hdock_dir} && ./hdock {receptor_tmp_path} {ligand_tmp_path} -out Hdock.out',
-                               shell=True)
+                                shell=True)
                 subprocess.run(f'cd {hdock_dir} && ./createpl Hdock.out top100.pdb -nmax 100 -complex -models',
-                               shell=True)
+                                shell=True)
                 dock_X = BaseComplex.from_pdb(
                     os.path.join(hdock_dir, 'model_1.pdb'), ligand_bound_path
                 ).ligand_coord()[:, CA_INDEX]
-            except:
-                print(f'Docking on {pdb_name} failed, skip.')
-                continue
+            except Exception as e:
+                print(f'Docking on pdb {pdb_name} failed, exception: {e}.')
             shutil.copy(os.path.join(hdock_dir, 'model_1.pdb'), pred_complex_path)
             subprocess.run(f'cd {hdock_dir} && rm Hdock.out && rm model*.pdb', shell=True)
 
