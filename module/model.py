@@ -271,7 +271,7 @@ class ElliDock(nn.Module):
         stable_loss /= bs
         rmsd_loss /= bs
 
-        loss = 2 * fit_loss + 2 * overlap_loss + ref_loss + dock_loss
+        loss = fit_loss + 2 * overlap_loss + ref_loss + 2 * dock_loss
 
         return loss, (fit_loss, overlap_loss, ref_loss, dock_loss, stable_loss, rmsd_loss)
 

@@ -69,8 +69,8 @@ def main(args):
         for line in lines:
             item = json.loads(line)
             test_desc[item['pdb']] = [item['rchain'], item['lchain']]
-    elif args.dataset == 'DIPS':
-        test_path = './test_sets_pdb/dips_test_random_transformed'
+    # elif args.dataset == 'DIPS':
+    #     test_path = './test_sets_pdb/dips_test_random_transformed'
     elif args.dataset == 'SAbDab':
         test_path = './test_sets_pdb/sabdab_test_random_transformed'
         test_desc_path = os.path.join(test_path, 'test.json')
@@ -253,7 +253,7 @@ def main(args):
 def parse():
     parser = argparse.ArgumentParser(description='Docking given antibody-antigen complex')
     parser.add_argument('--model_type', type=str, default='ElliDock', choices=['ElliDock', 'HDock', 'Multimer', 'DiffDock-PP', 'EquiDock'])
-    parser.add_argument('--dataset', type=str, required=True, default='DB5', choices=['SAbDab', 'DB5', 'DIPS'])
+    parser.add_argument('--dataset', type=str, required=True, default='DB5', choices=['DB5', 'SAbDab'])
     parser.add_argument('--ckpt', type=str, help='Path to checkpoint')
     parser.add_argument('--save_dir', type=str, default=None, help='Directory to save generated antibodies')
     parser.add_argument('--gpu', type=int, default=-1, help='GPU to use, -1 for cpu')
