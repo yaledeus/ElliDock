@@ -3,10 +3,10 @@
 ########## adjust configs according to your needs ##########
 DATA_DIR=./data/sabdab
 TRAIN_SET=${DATA_DIR}/train.json
-VALID_SET=${DATA_DIR}/val.json
+VALID_SET=${DATA_DIR}/valid.json
 SAVE_DIR=${DATA_DIR}/ckpt
 
-BATCH_SIZE=4
+BATCH_SIZE=2
 DATASET=SabDab
 ######### end of adjust ##########
 
@@ -58,14 +58,14 @@ ${PREFIX} train.py \
     --save_dir $SAVE_DIR \
     --model_type $MODEL \
     --lr 3e-4 \
-    --max_epoch 500 \
+    --max_epoch 1000 \
     --patience 8 \
     --save_topk 10 \
     --embed_dim 64 \
     --hidden_size 128 \
     --k_neighbors 10 \
-    --n_layers 3 \
-    --att_heads 16 \
+    --n_layers 5 \
+    --att_heads 20 \
     --rbf_dim 20 \
     --shuffle \
     --batch_size ${BATCH_SIZE} \
