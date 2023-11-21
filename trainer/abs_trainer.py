@@ -105,7 +105,7 @@ class Trainer:
             try:
                 loss = self.train_step(batch, self.global_step)
                 if loss.item() > 1e2:
-                    print_log(f'too large loss: {loss.item()}, skip batch', level='WARN')
+                    # print_log(f'too large loss: {loss.item()}, skip batch', level='WARN')
                     continue
                 self.optimizer.zero_grad()
                 loss.backward()

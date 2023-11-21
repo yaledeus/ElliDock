@@ -106,8 +106,10 @@ def main(args):
     # load test set
     if args.dataset == 'DB5.5':
         test_path = './test_sets_pdb/db5_test_random_transformed'
-    elif args.dataset == 'DIPS':
-        test_path = './test_sets_pdb/dips_test_random_transformed'
+    # elif args.dataset == 'DIPS':
+    #     test_path = './test_sets_pdb/dips_test_random_transformed'
+    elif args.dataset == 'SAbDab':
+        test_path = './test_sets_pdb/sabdab_test_random_transformed'
     else:
         raise ValueError(f'model type {model_type} not implemented')
 
@@ -155,9 +157,9 @@ def main(args):
 
 def parse():
     parser = argparse.ArgumentParser(description='Docking given antibody-antigen complex')
-    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['DB5.5', 'DIPS'])
+    parser.add_argument('--dataset', type=str, required=True, default='DB5.5', choices=['DB5.5', 'SAbDab'])
     parser.add_argument('--ckpt', type=str, required=True, help='Path to checkpoint')
-    parser.add_argument('--save_dir', type=str, default=None, help='Directory to save generated antibodies')
+    parser.add_argument('--save_dir', type=str, default=None, help='Directory to save generated meshes')
     parser.add_argument('--gpu', type=int, default=-1, help='GPU to use, -1 for cpu')
     return parser.parse_args()
 
