@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from .bio_parse import SabDabComplex, DBComplex, DIPSComplex, BaseComplex
 import sys
+
 sys.path.append('..')
 from utils.logger import print_log
 
@@ -49,7 +50,7 @@ class SabDabDataset(torch.utils.data.Dataset):
                 self.file_names = metainfo['file_names']
                 self.file_num_entries = metainfo['file_num_entries']
         except Exception as e:
-            print_log(f'Faild to load file {metainfo_file}, error: {e}', level='WARN')
+            print_log(f'Failed to load file {metainfo_file}, error: {e}', level='WARN')
             need_process = True
 
         if need_process:
@@ -121,13 +122,13 @@ class SabDabDataset(torch.utils.data.Dataset):
 
     ########### load data from file_path and add to self.data ##########
     def preprocess(self, file_path, save_dir, num_entry_per_file):
-        '''
+        """
         Load data from file_path and add processed data entries to self.data.
         Remember to call self._save_data(num_entry_per_file) to control the number
         of items in self.data (this function will save the first num_entry_per_file
         data and release them from self.data) e.g. call it when len(self.data) reaches
         num_entry_per_file.
-        '''
+        """
         with open(file_path, 'r') as fin:
             lines = fin.read().strip().split('\n')
         for line in tqdm(lines):
@@ -199,7 +200,6 @@ class SabDabDataset(torch.utils.data.Dataset):
                 'Error': True
             }
 
-
         return data
 
     @classmethod
@@ -243,12 +243,12 @@ class SabDabDataset(torch.utils.data.Dataset):
 # DB5.5 Complex dataset
 class DBDataset(torch.utils.data.Dataset):
     def __init__(self, file_path, save_dir=None, num_entry_per_file=-1, random=False):
-        '''
+        """
         file_path: path to the dataset
         save_dir: directory to save the processed data
         num_entry_per_file: number of entries in a single file. -1 to save all data into one file
                             (In-memory dataset)
-        '''
+        """
         super().__init__()
         if save_dir is None:
             if not os.path.isdir(file_path):
@@ -395,12 +395,12 @@ class DBDataset(torch.utils.data.Dataset):
 
             assert receptor_bb_coord.ndim == 3, f'invalid receptor coordinate dimension: {receptor_bb_coord.ndim}'
             assert ligand_bb_coord.ndim == 3, f'invalid ligand coordinate dimension: {ligand_bb_coord.ndim}'
-            assert len(receptor_seq) == len(receptor_rp) and len(receptor_seq) == len(receptor_id) and len(receptor_seq) == receptor_bb_coord.shape[0], \
-                'receptor seq/coord/rp/id dimension mismatch'
-            assert len(ligand_seq) == len(ligand_rp) and len(ligand_seq) == len(ligand_id) and len(ligand_seq) == ligand_bb_coord.shape[0], \
-                'ligand seq/coord/rp/id dimension mismatch'
-            assert receptor_bb_coord.shape[1] == ligand_bb_coord.shape[1] and receptor_bb_coord.shape[-1] == ligand_bb_coord.shape[-1], \
-                'receptor and ligand coordinates mismatch'
+            assert len(receptor_seq) == len(receptor_rp) and len(receptor_seq) == len(receptor_id) and len(
+                receptor_seq) == receptor_bb_coord.shape[0], 'receptor seq/coord/rp/id dimension mismatch'
+            assert len(ligand_seq) == len(ligand_rp) and len(ligand_seq) == len(ligand_id) and len(ligand_seq) == \
+                   ligand_bb_coord.shape[0], 'ligand seq/coord/rp/id dimension mismatch'
+            assert receptor_bb_coord.shape[1] == ligand_bb_coord.shape[1] and receptor_bb_coord.shape[-1] == \
+                   ligand_bb_coord.shape[-1], 'receptor and ligand coordinates mismatch'
             assert keypoints.shape[0] >= 1, 'keypoints not found'
 
             data = {
@@ -418,7 +418,6 @@ class DBDataset(torch.utils.data.Dataset):
             data = {
                 'Error': True
             }
-
 
         return data
 
@@ -463,12 +462,12 @@ class DBDataset(torch.utils.data.Dataset):
 # DIPS Complex dataset
 class DIPSDataset(torch.utils.data.Dataset):
     def __init__(self, file_path, save_dir=None, num_entry_per_file=-1, random=False):
-        '''
+        """
         file_path: path to the dataset
         save_dir: directory to save the processed data
         num_entry_per_file: number of entries in a single file. -1 to save all data into one file
                             (In-memory dataset)
-        '''
+        """
         super().__init__()
         if save_dir is None:
             if not os.path.isdir(file_path):
@@ -598,13 +597,13 @@ class DIPSDataset(torch.utils.data.Dataset):
         try:
             # receptor
             receptor_seq = item.receptor_seq()
-            receptor_bb_coord = item.receptor_coord()     # backbone atoms, [N_re, 4, 3]
+            receptor_bb_coord = item.receptor_coord()  # backbone atoms, [N_re, 4, 3]
             receptor_rp = item.receptor_relative_pos()
             receptor_id = item.receptor_identity()
 
             # ligand
             ligand_seq = item.ligand_seq()
-            ligand_bb_coord = item.ligand_coord()      # backbone atoms, [N_li, 4, 3]
+            ligand_bb_coord = item.ligand_coord()  # backbone atoms, [N_li, 4, 3]
             ligand_rp = item.ligand_relative_pos()
             ligand_id = item.ligand_identity()
 
@@ -616,12 +615,12 @@ class DIPSDataset(torch.utils.data.Dataset):
 
             assert receptor_bb_coord.ndim == 3, f'invalid receptor coordinate dimension: {receptor_bb_coord.ndim}'
             assert ligand_bb_coord.ndim == 3, f'invalid ligand coordinate dimension: {ligand_bb_coord.ndim}'
-            assert len(receptor_seq) == len(receptor_rp) and len(receptor_seq) == len(receptor_id) and len(receptor_seq) == receptor_bb_coord.shape[0], \
-                'receptor seq/coord/rp/id dimension mismatch'
-            assert len(ligand_seq) == len(ligand_rp) and len(ligand_seq) == len(ligand_id) and len(ligand_seq) == ligand_bb_coord.shape[0], \
-                'ligand seq/coord/rp/id dimension mismatch'
-            assert receptor_bb_coord.shape[1] == ligand_bb_coord.shape[1] and receptor_bb_coord.shape[-1] == ligand_bb_coord.shape[-1], \
-                'receptor and ligand coordinates mismatch'
+            assert len(receptor_seq) == len(receptor_rp) and len(receptor_seq) == len(receptor_id) and len(
+                receptor_seq) == receptor_bb_coord.shape[0], 'receptor seq/coord/rp/id dimension mismatch'
+            assert len(ligand_seq) == len(ligand_rp) and len(ligand_seq) == len(ligand_id) and len(ligand_seq) == \
+                   ligand_bb_coord.shape[0], 'ligand seq/coord/rp/id dimension mismatch'
+            assert receptor_bb_coord.shape[1] == ligand_bb_coord.shape[1] and receptor_bb_coord.shape[-1] == \
+                   ligand_bb_coord.shape[-1], 'receptor and ligand coordinates mismatch'
             assert keypoints.shape[0] >= 1, 'keypoints not found'
 
             data = {
@@ -639,7 +638,6 @@ class DIPSDataset(torch.utils.data.Dataset):
             data = {
                 'Error': True
             }
-
 
         return data
 
@@ -701,14 +699,11 @@ def test_complex_process(ligand_path, receptor_path):
     assert receptor_bb_coord.ndim == 3, f'invalid receptor coordinate dimension: {receptor_bb_coord.ndim}'
     assert ligand_bb_coord.ndim == 3, f'invalid ligand coordinate dimension: {ligand_bb_coord.ndim}'
     assert len(receptor_seq) == len(receptor_rp) and len(receptor_seq) == len(receptor_id) and len(receptor_seq) == \
-           receptor_bb_coord.shape[0], \
-        'receptor seq/coord/rp/id dimension mismatch'
+           receptor_bb_coord.shape[0], 'receptor seq/coord/rp/id dimension mismatch'
     assert len(ligand_seq) == len(ligand_rp) and len(ligand_seq) == len(ligand_id) and len(ligand_seq) == \
-           ligand_bb_coord.shape[0], \
-        'ligand seq/coord/rp/id dimension mismatch'
+           ligand_bb_coord.shape[0], 'ligand seq/coord/rp/id dimension mismatch'
     assert receptor_bb_coord.shape[1] == ligand_bb_coord.shape[1] and receptor_bb_coord.shape[2] == \
-           ligand_bb_coord.shape[2], \
-        'receptor and ligand coordinates mismatch'
+           ligand_bb_coord.shape[2], 'receptor and ligand coordinates mismatch'
 
     data = {
         'S': torch.tensor(np.array(receptor_seq + ligand_seq), dtype=torch.long),
