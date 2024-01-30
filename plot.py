@@ -11,10 +11,11 @@ result_dir = './results'
 font_path = font_manager.findfont(font_manager.FontProperties(family="Times New Roman"))
 
 font = {
-    # 'family': font_manager.FontProperties(fname=font_path).get_name(),
+    'family': font_manager.FontProperties(fname=font_path).get_name(),
     # 'weight': 'bold',
-    'size': 11
+    'size': 12
 }
+
 
 def scatterplot_irmsd_crmsd(dataset, save_dir=os.getcwd()):
     plt.figure()
@@ -50,9 +51,9 @@ def violinplot(dataset, metric, save_dir=os.getcwd()):
     sns.violinplot(x='model_type', y=metric, data=data, legend=False)
     plt.xticks()
     plt.yticks()
-    plt.xlabel('model', size=14)
-    plt.ylabel(metric, size=14)
-    plt.title(f'{metric} distributions ({dataset} test)')
+    # plt.xlabel('model', size=16)
+    plt.ylabel(metric, size=16)
+    # plt.title(f'{metric} distributions ({dataset} test)')
     plt.savefig(os.path.join(save_dir, f'{dataset.lower()}-violin-{metric.lower()}.png'))
 
 
@@ -73,9 +74,9 @@ def barplot_intersection(dataset, metric, save_dir=os.getcwd()):
     sns.barplot(x='model_type', y=metric, data=data)
     plt.xticks()
     plt.yticks()
-    plt.xlabel('model', size=14)
-    plt.ylabel(metric, size=14)
-    plt.title(f'{metric} distributions ({dataset} test)')
+    # plt.xlabel('model', size=14)
+    plt.ylabel(metric, size=16)
+    # plt.title(f'{metric} distributions ({dataset} test)')
     plt.savefig(os.path.join(save_dir, f'{dataset.lower()}-bar-{metric.lower()}.png'))
 
 
@@ -93,9 +94,9 @@ def scatter_dockq_compare(save_dir=os.getcwd()):
     plt.yticks()
     plt.xlim(0, 1)
     plt.ylim(0, 1)
-    plt.xlabel('ElliDock DockQ', size=14)
-    plt.ylabel('Multimer DockQ', size=14)
-    plt.title(f'ElliDock vs Multimer on DockQ (SAbDab test)')
+    plt.xlabel('ElliDock DockQ', size=16)
+    plt.ylabel('Multimer DockQ', size=16)
+    # plt.title(f'ElliDock vs Multimer on DockQ (SAbDab test)')
     plt.savefig(os.path.join(save_dir, f'sabdab-dockq-compare.png'))
 
 

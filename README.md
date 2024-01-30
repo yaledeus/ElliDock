@@ -4,10 +4,15 @@
 
 ### Dependencies
 
-Our code works on Linux well. You can use `environment.yml` to quickly build `conda` dependencies. Note that our environment works on `CUDA==11.4`, it will be required to install `pytorch` and other dependencies with the corresponding CUDA version on your server.
+Our code works on Linux well with `CUDA==11.4`. It will be required to install `pytorch` and other dependencies listed below with the corresponding CUDA version (if necessary) on your server.
 
-```bash
-conda env create -f environment.yml
+```
+biopython
+e3nn
+pandas
+torch_scatter
+tqdm
+requests
 ```
 
 ### DB5.5 data
