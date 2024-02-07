@@ -85,3 +85,10 @@ To obtain metrics of other methods, please run:
 ```bash
 python test.py --model_type {HDock/Multimer/DiffDock-PP/EquiDock} --dataset {DB5/SAbDab} --gpu {GPU}
 ```
+
+If you only want to generate the docked complex structure without evaluation, use the following command:
+
+```bash
+python inference.py --dataset {DB5/SabDab} --gpu {GPU} --ckpt {ckpt_path}
+```
+
