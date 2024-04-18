@@ -92,3 +92,5 @@ If you only want to generate the docked complex structure without evaluation, us
 python inference.py --dataset {DB5/SabDab} --gpu {GPU} --ckpt {ckpt_path}
 ```
 
+### License
+MIT
