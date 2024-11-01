@@ -1,6 +1,6 @@
 # ElliDock
 
-### Rigid Protein-Protein Docking via Equivariant Elliptic-Paraboloid Interface Prediction
+The code in this repository accompanies our paper "[Rigid Protein-Protein Docking via Equivariant Elliptic-Paraboloid Interface Prediction](https://arxiv.org/abs/2401.08986)'' (ICLR 2024), by Ziyang yu, Wenbing Huang and Yang Liu.
 
 ### Dependencies
 
@@ -94,3 +94,18 @@ python inference.py --dataset {DB5/SabDab} --gpu {GPU} --ckpt {ckpt_path}
 
 ### License
 MIT
+
+### Citation
+
+If you find our code useful in your research, please cite the following paper:
+
+```
+@misc{yu2024rigid,
+  title={Rigid Protein-Protein Docking via Equivariant Elliptic-Paraboloid Interface Prediction},
+  author={Yu, Ziyang and Huang, Wenbing and Liu, Yang},
+  year={2024},
+  eprint={2401.08986},
+  archivePrefix={arXiv},
+}
+```
+
